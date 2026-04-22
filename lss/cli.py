@@ -15,6 +15,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("-V", "--version", action="version", version=f"lss {__version__}")
     p.add_argument("--json", action="store_true", help="output results as JSON")
     p.add_argument("--no-color", action="store_true", help="disable colored output")
+    p.add_argument("--license-key", metavar="KEY", help="LSS license key (overrides LSS_LICENSE_KEY env and /etc/lss/license.key)")
 
     sub = p.add_subparsers(dest="command")
 
@@ -201,6 +202,18 @@ def main(argv: list[str] | None = None):
         sys.exit(1)
 
     banner()
+
+    # License gate — applies to every mutating command. In bootstrap mode
+    # this is a no-op with a one-time evaluation notice; once Gumroad
+    # product slugs are wired and BOOTSTRAP_MODE is flipped off in
+    # lss/lib/license.py, this enforces a valid license key.
+    if args.command in ("harden", "rollback", "report"):
+        from lss.lib.license import check_license
+        status = check_license(getattr(args, "license_key", None))
+        if not status.valid:
+            err(f"license check failed: {status.detail}")
+            err("Get a license at https://linuxsecuritysuite.com")
+            sys.exit(2)
 
     if args.command == "audit":
         from lss.audit import run_audit

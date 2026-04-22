@@ -1,0 +1,58 @@
+name: Bug report
+description: Report a defect in LSS
+title: "[bug] "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to file a report.
+        **For security vulnerabilities, do NOT use this template — see [SECURITY.md](../SECURITY.md).**
+  - type: input
+    id: version
+    attributes:
+      label: LSS version
+      description: Output of `lss --version`
+      placeholder: "lss 0.4.0"
+    validations:
+      required: true
+  - type: input
+    id: distro
+    attributes:
+      label: Distribution + version
+      description: Output of `cat /etc/os-release | head -3`
+      placeholder: "Debian 12 / Ubuntu 24.04 / Kali rolling / etc."
+    validations:
+      required: true
+  - type: textarea
+    id: command
+    attributes:
+      label: Command you ran
+      description: The exact `lss` invocation that misbehaved
+      placeholder: "sudo lss harden --confirm --control 5.2.5"
+      render: shell
+    validations:
+      required: true
+  - type: textarea
+    id: output
+    attributes:
+      label: Output
+      description: Paste the full output (stdout + stderr). Redact anything sensitive (hostnames, IPs, keys).
+      render: shell
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+      description: What did you expect to happen instead?
+    validations:
+      required: true
+  - type: textarea
+    id: journal
+    attributes:
+      label: Journal entry (for harden/rollback bugs)
+      description: |
+        Attach `/var/log/lss/journal/<run-id>.json` if the bug is in `harden` or `rollback`.
+        Use the run ID printed at the start of the failed command.
+      render: json

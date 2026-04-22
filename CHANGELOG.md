@@ -2,6 +2,24 @@
 
 All notable changes to The Linux Security Suite are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.0] — 2026-04-22
+
+### Added
+- License-key gate (`lss/lib/license.py`) — currently in BOOTSTRAP mode (permissive with one-time evaluation notice). Flip `BOOTSTRAP_MODE = False` and fill in the three Gumroad product slugs to enforce. Calls Gumroad's license verify API on `harden`/`rollback`/`report`. Supports `--license-key` flag, `LSS_LICENSE_KEY` env var, and `/etc/lss/license.key` fallback.
+- Bash and zsh shell completions in `completions/`.
+- `SECURITY.md` with private-disclosure policy, response SLAs, and cosign verification instructions.
+- `CONTRIBUTING.md` with hard rules (no `shell=True`, backup-before-modify, argv undos).
+- `SUPPORT.md` distinguishing community vs commercial support tiers.
+- GitHub issue templates (bug, feature, security redirect) + PR template + Dependabot.
+- `.github/workflows/ci.yml` runs pytest on Python 3.10–3.13 plus a Bandit static analysis pass and a wheel install smoke test.
+- `examples/sample-audit-report.html` — synthetic but realistic 204-control report so prospects can preview the deliverable before buying.
+- `launch/wire-gumroad-urls.sh` — one-shot script that swaps the three Buy CTAs in the landing page once Gumroad URLs are known.
+- `tests/test_per_control.py` — auto-generated per-control sanity tests (ID shape, title, section, level, check function doesn't crash). 200+ parameterized cases.
+
+### Changed
+- Project author in `pyproject.toml` is now "The Linux Security Suite" (project-name attribution rather than personal name).
+- Git history rewritten to use Proton email and project-name commit author.
+
 ## [0.3.0] — 2026-04-22
 
 ### Added

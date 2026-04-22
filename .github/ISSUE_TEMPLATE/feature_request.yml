@@ -1,0 +1,40 @@
+name: Feature request
+description: Suggest an enhancement to LSS
+title: "[feat] "
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Note: feature contributions to the rollback engine, license-key gate, or release pipeline are not accepted.
+        See [CONTRIBUTING.md](../CONTRIBUTING.md). Bug reports and CIS control updates always welcome.
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem does this solve?
+      description: Describe the operational pain point. Don't pitch the solution yet.
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed approach
+      description: How would you like LSS to behave?
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives you've considered
+  - type: dropdown
+    id: tier
+    attributes:
+      label: Are you a paying customer?
+      description: Helps us prioritize.
+      options:
+        - "No (community user)"
+        - "Solo"
+        - "Pro"
+        - "Enterprise"
+    validations:
+      required: true

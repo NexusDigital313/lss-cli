@@ -1,0 +1,65 @@
+#compdef lss
+# zsh completion for the lss CLI
+#
+# Install:
+#   sudo cp completions/_lss /usr/share/zsh/site-functions/_lss
+#   compinit
+#
+# Or per-user (add the dir to your $fpath in .zshrc first):
+#   cp completions/_lss ~/.zsh/completions/_lss
+
+_lss() {
+    local context state line
+    typeset -A opt_args
+
+    _arguments -C \
+        '(- *)'{-h,--help}'[show help and exit]' \
+        '(- *)'{-V,--version}'[show version and exit]' \
+        '--json[output results as JSON]' \
+        '--no-color[disable colored output]' \
+        '--license-key[LSS license key]:KEY:' \
+        '1: :->command' \
+        '*::arg:->args'
+
+    case $state in
+        command)
+            local -a commands
+            commands=(
+                'audit:run CIS checks in read-only mode'
+                'harden:apply remediations for failing controls'
+                'rollback:undo previous hardening changes'
+                'report:generate HTML report from last audit'
+                'list:list all 204 controls with descriptions'
+                'help-all:show all commands with full descriptions'
+            )
+            _describe 'command' commands
+            ;;
+        args)
+            case $words[1] in
+                audit)
+                    _arguments \
+                        '--profile[CIS profile]:profile:(server workstation hardened)' \
+                        '*--control[run only specific controls]:control_id:'
+                    ;;
+                harden)
+                    _arguments \
+                        '(--dry-run)--confirm[apply changes to the system]' \
+                        '(--confirm)--dry-run[preview without applying]' \
+                        '*--control[harden only specific controls]:control_id:'
+                    ;;
+                rollback)
+                    _arguments \
+                        '(--run-id --control)--last[rollback the most recent run]' \
+                        '(--last --control)--run-id[rollback a specific run]:run_id:' \
+                        '(--last --run-id)--control[rollback a specific control]:control_id:'
+                    ;;
+                report)
+                    _arguments \
+                        '(-o --output)'{-o,--output}'[output path]:path:_files'
+                    ;;
+            esac
+            ;;
+    esac
+}
+
+_lss "$@"
