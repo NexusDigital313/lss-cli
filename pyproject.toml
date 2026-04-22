@@ -1,0 +1,49 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "lss"
+dynamic = ["version"]
+description = "The Linux Security Suite — audit, harden, and rollback Linux hosts against the CIS Benchmark."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { file = "LICENSE" }
+authors = [{ name = "The Linux Security Suite", email = "blckgrndntional313proton.me@proton.me" }]
+keywords = ["cis", "hardening", "security", "audit", "linux", "compliance"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: Console",
+    "Intended Audience :: System Administrators",
+    "Intended Audience :: Information Technology",
+    "License :: Other/Proprietary License",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Security",
+    "Topic :: System :: Systems Administration",
+]
+dependencies = [
+    "rich>=13.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "build>=1.0",
+]
+
+[project.scripts]
+lss = "lss.cli:main"
+
+[project.urls]
+Homepage = "https://linuxsecuritysuite.com"
+
+[tool.setuptools]
+packages = ["lss", "lss.lib", "lss.controls"]
+
+[tool.setuptools.dynamic]
+version = { attr = "lss.__version__" }

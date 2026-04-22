@@ -1,0 +1,70 @@
+name: Release (build + cosign-sign + checksum)
+
+# Triggered when you push a tag like v0.3.0. Builds the wheel + sdist,
+# signs them with cosign keyless OIDC, generates SHA256SUMS, and uploads
+# everything as a GitHub Release.
+#
+# Setup before first use:
+#   1. Enable GitHub Actions for the repo.
+#   2. No cosign keypair needed — uses keyless signing tied to the GitHub
+#      Actions OIDC identity. Customers verify with:
+#         cosign verify-blob \
+#           --certificate lss-X.Y.Z-py3-none-any.whl.crt \
+#           --signature lss-X.Y.Z-py3-none-any.whl.sig \
+#           --certificate-identity-regexp "https://github.com/<owner>/lss/.github/workflows/release.yml@.*" \
+#           --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
+#           lss-X.Y.Z-py3-none-any.whl
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+
+permissions:
+  contents: write   # to upload release assets
+  id-token: write   # for cosign keyless signing via OIDC
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Build sdist + wheel
+        run: |
+          python -m pip install --upgrade pip build
+          python -m build
+
+      - name: Install cosign
+        uses: sigstore/cosign-installer@v3
+
+      - name: Sign release artifacts (keyless)
+        run: |
+          cd dist
+          for f in *.whl *.tar.gz; do
+            cosign sign-blob --yes \
+              --output-certificate "${f}.crt" \
+              --output-signature   "${f}.sig" \
+              "$f"
+          done
+
+      - name: Generate SHA256SUMS
+        run: |
+          cd dist
+          sha256sum *.whl *.tar.gz > SHA256SUMS
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/*.whl
+            dist/*.tar.gz
+            dist/*.sig
+            dist/*.crt
+            dist/SHA256SUMS
+          generate_release_notes: true

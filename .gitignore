@@ -1,0 +1,42 @@
+# Build artifacts
+dist/
+build/
+*.egg-info/
+*.egg
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Virtualenvs
+.venv/
+venv/
+env/
+
+# Editor / IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+
+# Local secrets — never commit
+.env
+.env.local
+*.pem
+*.key
+license-keys/
+
+# Cosign keypair (if you ever generate one — keyless workflow doesn't need this,
+# but a stray cosign.key would be a critical leak)
+cosign.key
+cosign.pub
+
+# Local LSS test artifacts
+/var/log/lss/
+audit-*.json
+report-*.html
