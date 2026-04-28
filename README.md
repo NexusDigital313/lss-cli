@@ -6,16 +6,16 @@
 [![License](https://img.shields.io/badge/license-Commercial-lightgrey.svg)](LICENSE)
 [![Python](https://img.shields.io/badge/python-3.10%2B-blue.svg)](https://www.python.org/downloads/)
 
-LSS scans your Linux host against **204 CIS Benchmark controls**, auto-fixes **173 of them**, and records every change in a rollback journal so a bad pass is one command away from being reversed. No agent, no cloud, no six-figure GRC platform — a single CLI for operators who want CIS-grade hardening they can actually undo.
+LSS scans your Linux host against **206 CIS-aligned hardening controls**, auto-fixes **172 of them**, and records every change in a rollback journal so a bad pass is one command away from being reversed. No agent, no cloud, no six-figure GRC platform — a single CLI for operators who want CIS-grade hardening they can actually undo.
 
 ```
 $ sudo lss audit
-$ sudo lss harden --confirm          # applies 173 auto-fixes, skips the 31 that shouldn't be automated
+$ sudo lss harden --confirm          # applies 172 auto-fixes, skips the 34 that shouldn't be automated
 $ sudo lss rollback --last           # something broke? reverse it
 $ sudo lss report -o audit.html      # printable, auditor-friendly HTML
 ```
 
-> **Preview the output**: [`examples/sample-audit-report.html`](examples/sample-audit-report.html) is a synthetic 204-control report rendered from real LSS output. Open it in a browser to see what a customer-facing audit deliverable looks like.
+> **Preview the output**: [`examples/sample-audit-report.html`](examples/sample-audit-report.html) is a synthetic full-coverage report rendered from real LSS output. Open it in a browser to see what a customer-facing audit deliverable looks like.
 
 ---
 
@@ -41,8 +41,11 @@ The Gumroad bundle ships `SHA256SUMS` alongside the wheel and sdist. Verify with
 # Read-only audit — no changes, writes nothing
 sudo lss audit
 
-# Apply every available auto-fix (173 of 204 controls)
+# Apply every available auto-fix (172 of 206 controls)
 sudo lss harden --confirm
+
+# Same, but prompt y/N before each fix
+sudo lss harden --confirm --interactive
 
 # Preview what harden would do, without touching the system
 sudo lss harden --confirm --dry-run
@@ -62,6 +65,9 @@ sudo lss audit --json > audit.json
 # Printable HTML report
 sudo lss report -o ~/audit.html
 
+# Before/after delta — shows what changed since a previous audit
+sudo lss report --baseline /var/log/lss/audit-<earlier-ts>.json -o delta.html
+
 # Full command reference with consequences called out
 lss help-all
 ```
@@ -70,23 +76,25 @@ lss help-all
 
 ## Coverage
 
-**204 CIS Benchmark controls** across 19 modules. The honest breakdown:
+**206 hardening controls** across 19 modules — 201 CIS-aligned plus 5 LSS-XXX detection controls for situations standard CIS scanners miss. The honest breakdown:
 
 | | Count | What it means |
 |---|---|---|
-| **Automated fix** | 173 (85%) | `lss harden` applies the fix and records a rollback entry |
-| **Audit-only by design** | 31 (15%) | Flagged with an exact remediation command in the detail string |
+| **Automated fix** | 172 (83.5%) | `lss harden` applies the fix and records a rollback entry |
+| **Audit-only by design** | 34 (16.5%) | Flagged with an exact remediation command in the detail string |
 
-**Why 31 controls stay audit-only** (and won't be auto-fixed):
+**Why 34 controls stay audit-only** (and won't be auto-fixed):
 
 - **Bootloader/kernel-param edits** (1.4.2, 1.6.2, 4.1.2) — a bad GRUB write can render the host unbootable, and rollback can't reach a box that won't boot
 - **Partition layout** (1.1.2–1.1.7) — separating `/tmp`, `/var`, `/home` requires repartitioning with downtime and a recovery plan
 - **AppArmor enforce** (1.6.3) — moving a profile from complain → enforce can break running apps; operator must review
+- **PAM stack edits** (5.3.3) — correctly editing the PAM password stack across Debian (pam-auth-update profile), RHEL (authselect), and bare Linux is its own subsystem; full automation deferred to v0.5.1
 - **Duplicate UIDs/usernames/groupnames** (6.2.1, 6.2.3–6.2.7) — requires an operator to decide which account is real
 - **Account-state decisions** (5.4.2, 6.2.15) — no safe auto-choice between `passwd -l` vs `passwd -d` vs `/usr/sbin/nologin`
 - **Evidence-destruction risks** (6.1.10, 6.1.11, 6.1.13) — auto-chowning an unowned file or stripping SUID can destroy forensic evidence
 - **Site-specific policies** (repos, firewall rules per port, unused interfaces, wireless) — not a compliance checkbox
 - **Big-hammer actions** (`apt upgrade`, setting root password) — too disruptive for an unattended pass
+- **Forensic recommendations** (LSS-004, LSS-005) — detection-only by design; LSS-005 in particular has log-volume implications that should be enabled deliberately, not as part of a default harden pass
 
 See the [full list](CHANGELOG.md) and the [`examples/`](examples/) directory for what you actually get.
 
@@ -130,8 +138,8 @@ Legacy pre-v0.3 journal entries with string-form undos are **refused, not execut
 
 | | **LSS** | Lynis | OpenSCAP | Chef InSpec |
 |---|---|---|---|---|
-| CIS Benchmark coverage | 204 controls | ~270 tests | SCAP content (varies) | Depends on profile |
-| **Automated remediation** | ✅ 173/204 | ❌ audit-only | ⚠️ via SCAP remediation | ⚠️ via custom wrappers |
+| CIS Benchmark coverage | 206 controls | ~270 tests | SCAP content (varies) | Depends on profile |
+| **Automated remediation** | ✅ 172/206 | ❌ audit-only | ⚠️ via SCAP remediation | ⚠️ via custom wrappers |
 | **Built-in rollback** | ✅ journaled, argv-undo | ❌ | ❌ | ❌ |
 | Dry-run mode | ✅ | N/A (audit-only) | ⚠️ content-dependent | ✅ |
 | Machine-readable output | ✅ JSON | partial | XML/ARF | JSON |
