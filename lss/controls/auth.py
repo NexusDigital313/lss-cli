@@ -327,12 +327,34 @@ def _check_root_gid() -> CheckResult:
     return CheckResult("fail", "root account not found in /etc/passwd")
 
 
+def _fix_root_gid() -> list[RollbackEntry]:
+    """Set root's primary GID to 0 via usermod."""
+    passwd = Path("/etc/passwd")
+    if not passwd.exists():
+        return []
+    prev_gid = None
+    for line in passwd.read_text().splitlines():
+        parts = line.split(":")
+        if parts and parts[0] == "root" and len(parts) >= 4:
+            prev_gid = parts[3]
+            break
+    if prev_gid == "0" or prev_gid is None:
+        return []
+    r = subprocess.run(["usermod", "-g", "0", "root"], capture_output=True, text=True)
+    if r.returncode != 0:
+        raise RuntimeError(f"usermod failed: {r.stderr.strip()}")
+    return [RollbackEntry(
+        action=f"set root GID 0 (was {prev_gid})",
+        undo=[["usermod", "-g", prev_gid, "root"]],
+    )]
+
+
 register(Control(
     id="6.2.2",
     title="Ensure root GID is 0",
     section="users",
     check=_check_root_gid,
-    fix=None,  # Too dangerous to auto-fix
+    fix=_fix_root_gid,
 ))
 
 

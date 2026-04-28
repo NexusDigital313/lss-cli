@@ -118,7 +118,7 @@ def _check_suid_sgid() -> CheckResult:
             ["find", "/", "-xdev", "(", "-perm", "-4000", "-o", "-perm", "-2000", ")",
              "-type", "f",
              "-not", "-path", "/proc/*", "-not", "-path", "/sys/*"],
-            capture_output=True, text=True, timeout=30,
+            capture_output=True, text=True, timeout=120,
         )
         files = [f for f in r.stdout.strip().splitlines() if f]
         count = len(files)

@@ -5,10 +5,26 @@ from __future__ import annotations
 import subprocess
 from pathlib import Path
 
-from lss.lib import journal
+from lss.lib import journal, pkg
 from lss.lib.registry import Control, CheckResult, RollbackEntry, register
 
 IPTABLES_V4_RULES = "/etc/iptables/rules.v4"
+IPTABLES_V6_RULES = "/etc/iptables/rules.v6"
+
+
+def _persist_ip6tables_v6() -> None:
+    out_dir = Path(IPTABLES_V6_RULES).parent
+    try:
+        out_dir.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        return
+    try:
+        r = subprocess.run(["ip6tables-save"], capture_output=True, text=True, check=False)
+    except FileNotFoundError:
+        return
+    if r.returncode != 0:
+        return
+    Path(IPTABLES_V6_RULES).write_text(r.stdout)
 
 
 def _cmd_exists(name: str) -> bool:
@@ -62,7 +78,7 @@ register(Control(
     title="Ensure iptables is installed",
     section="network",
     check=_check_iptables_installed,
-    fix=None,  # Package install
+    fix=lambda: pkg.install("iptables"),
 ))
 
 
@@ -79,7 +95,7 @@ register(Control(
     title="Ensure nftables is installed",
     section="network",
     check=_check_nftables_installed,
-    fix=None,
+    fix=lambda: pkg.install("nftables"),
 ))
 
 
@@ -134,15 +150,48 @@ register(Control(
 
 # ---- CIS 3.5.2.2: Ensure iptables loopback traffic is configured ----
 
+def _input_reachable_chains(rules: str) -> set[str]:
+    """Collect chain names that INPUT jumps to (directly or transitively).
+
+    UFW (and similar wrappers) split rules across chains like ufw-before-input,
+    so the loopback ACCEPT may not live literally on INPUT.
+    """
+    jumps: dict[str, set[str]] = {}
+    for line in rules.splitlines():
+        toks = line.split()
+        if len(toks) < 4 or toks[0] != "-A":
+            continue
+        chain = toks[1]
+        if "-j" in toks:
+            tgt = toks[toks.index("-j") + 1]
+            jumps.setdefault(chain, set()).add(tgt)
+        if "-g" in toks:
+            tgt = toks[toks.index("-g") + 1]
+            jumps.setdefault(chain, set()).add(tgt)
+    reachable: set[str] = {"INPUT"}
+    stack = ["INPUT"]
+    while stack:
+        c = stack.pop()
+        for tgt in jumps.get(c, ()):
+            if tgt in reachable:
+                continue
+            if tgt in {"ACCEPT", "DROP", "REJECT", "RETURN", "LOG", "QUEUE"}:
+                continue
+            reachable.add(tgt)
+            stack.append(tgt)
+    return reachable
+
+
 def _check_iptables_loopback() -> CheckResult:
     if not _cmd_exists("iptables"):
         return CheckResult("warn", "iptables not available")
     rules = _iptables_rules()
-    has_lo_accept = "-A INPUT -i lo -j ACCEPT" in rules
-    has_lo_deny = ("-A INPUT -s 127.0.0.0/8" in rules and
-                   ("DROP" in rules or "REJECT" in rules))
-    if has_lo_accept:
-        return CheckResult("pass")
+    import re
+    reachable = _input_reachable_chains(rules)
+    pat = re.compile(r"^-A (\S+) -i lo -j ACCEPT\s*$", re.MULTILINE)
+    for m in pat.finditer(rules):
+        if m.group(1) in reachable:
+            return CheckResult("pass")
     return CheckResult("fail", "loopback INPUT ACCEPT rule not found")
 
 
@@ -276,12 +325,34 @@ def _check_ip6tables_default_deny() -> CheckResult:
     return CheckResult("fail", "ip6tables default policy is not DROP")
 
 
+def _fix_ip6tables_default_deny() -> list[RollbackEntry]:
+    r = subprocess.run(["sysctl", "-n", "net.ipv6.conf.all.disable_ipv6"], capture_output=True, text=True)
+    if r.stdout.strip() == "1":
+        return []
+    entries = []
+    rules_backup = journal.backup_file(IPTABLES_V6_RULES)
+    for chain in ["INPUT", "FORWARD"]:
+        subprocess.run(["ip6tables", "-P", chain, "DROP"], capture_output=True)
+        entries.append(RollbackEntry(
+            action=f"set ip6tables {chain} policy to DROP",
+            undo=[["ip6tables", "-P", chain, "ACCEPT"]],
+        ))
+    _persist_ip6tables_v6()
+    entries.append(RollbackEntry(
+        action=f"persisted ip6tables rules to {IPTABLES_V6_RULES}",
+        path=IPTABLES_V6_RULES,
+        backup=rules_backup,
+        undo=[] if rules_backup else [["rm", "-f", IPTABLES_V6_RULES]],
+    ))
+    return entries
+
+
 register(Control(
     id="3.5.3.1",
     title="Ensure ip6tables default deny firewall policy",
     section="network",
     check=_check_ip6tables_default_deny,
-    fix=None,  # Mirroring IPv4 fix is risky without context
+    fix=_fix_ip6tables_default_deny,
 ))
 
 
@@ -299,12 +370,43 @@ def _check_ip6tables_loopback() -> CheckResult:
     return CheckResult("fail", "ip6tables loopback INPUT ACCEPT not found")
 
 
+def _fix_ip6tables_loopback() -> list[RollbackEntry]:
+    r = subprocess.run(["sysctl", "-n", "net.ipv6.conf.all.disable_ipv6"], capture_output=True, text=True)
+    if r.stdout.strip() == "1":
+        return []
+    entries = []
+    rules_backup = journal.backup_file(IPTABLES_V6_RULES)
+    subprocess.run(["ip6tables", "-A", "INPUT", "-i", "lo", "-j", "ACCEPT"], capture_output=True)
+    entries.append(RollbackEntry(
+        action="added ip6tables loopback INPUT ACCEPT",
+        undo=[["ip6tables", "-D", "INPUT", "-i", "lo", "-j", "ACCEPT"]],
+    ))
+    subprocess.run(["ip6tables", "-A", "OUTPUT", "-o", "lo", "-j", "ACCEPT"], capture_output=True)
+    entries.append(RollbackEntry(
+        action="added ip6tables loopback OUTPUT ACCEPT",
+        undo=[["ip6tables", "-D", "OUTPUT", "-o", "lo", "-j", "ACCEPT"]],
+    ))
+    subprocess.run(["ip6tables", "-A", "INPUT", "-s", "::1", "-j", "DROP"], capture_output=True)
+    entries.append(RollbackEntry(
+        action="added ip6tables drop non-lo ::1",
+        undo=[["ip6tables", "-D", "INPUT", "-s", "::1", "-j", "DROP"]],
+    ))
+    _persist_ip6tables_v6()
+    entries.append(RollbackEntry(
+        action=f"persisted ip6tables rules to {IPTABLES_V6_RULES}",
+        path=IPTABLES_V6_RULES,
+        backup=rules_backup,
+        undo=[] if rules_backup else [["rm", "-f", IPTABLES_V6_RULES]],
+    ))
+    return entries
+
+
 register(Control(
     id="3.5.3.2",
     title="Ensure ip6tables loopback traffic is configured",
     section="network",
     check=_check_ip6tables_loopback,
-    fix=None,
+    fix=_fix_ip6tables_loopback,
 ))
 
 
@@ -322,12 +424,35 @@ def _check_ip6tables_established() -> CheckResult:
     return CheckResult("fail", "no ESTABLISHED rule in ip6tables")
 
 
+def _fix_ip6tables_established() -> list[RollbackEntry]:
+    r = subprocess.run(["sysctl", "-n", "net.ipv6.conf.all.disable_ipv6"], capture_output=True, text=True)
+    if r.stdout.strip() == "1":
+        return []
+    rules_backup = journal.backup_file(IPTABLES_V6_RULES)
+    subprocess.run(
+        ["ip6tables", "-A", "INPUT", "-m", "state", "--state", "ESTABLISHED,RELATED", "-j", "ACCEPT"],
+        capture_output=True,
+    )
+    entries = [RollbackEntry(
+        action="added ip6tables ESTABLISHED,RELATED ACCEPT on INPUT",
+        undo=[["ip6tables", "-D", "INPUT", "-m", "state", "--state", "ESTABLISHED,RELATED", "-j", "ACCEPT"]],
+    )]
+    _persist_ip6tables_v6()
+    entries.append(RollbackEntry(
+        action=f"persisted ip6tables rules to {IPTABLES_V6_RULES}",
+        path=IPTABLES_V6_RULES,
+        backup=rules_backup,
+        undo=[] if rules_backup else [["rm", "-f", IPTABLES_V6_RULES]],
+    ))
+    return entries
+
+
 register(Control(
     id="3.5.3.3",
     title="Ensure ip6tables outbound and established connections are configured",
     section="network",
     check=_check_ip6tables_established,
-    fix=None,
+    fix=_fix_ip6tables_established,
 ))
 
 
@@ -348,12 +473,42 @@ def _check_iptables_persistent() -> CheckResult:
     return CheckResult("warn", "no persistent iptables rules found — rules may not survive reboot")
 
 
+def _fix_iptables_persistent() -> list[RollbackEntry]:
+    """Save current iptables (and ip6tables if IPv6 enabled) rules to disk.
+
+    Creates /etc/iptables/rules.v4 (and .v6) via iptables-save. Rollback
+    removes the files we created and restores any prior content from backup.
+    """
+    if not _cmd_exists("iptables-save"):
+        raise RuntimeError("iptables-save not installed")
+    entries = []
+    rules_backup_v4 = journal.backup_file(IPTABLES_V4_RULES)
+    _persist_iptables_v4()
+    entries.append(RollbackEntry(
+        action=f"persisted iptables rules to {IPTABLES_V4_RULES}",
+        path=IPTABLES_V4_RULES,
+        backup=rules_backup_v4,
+        undo=[] if rules_backup_v4 else [["rm", "-f", IPTABLES_V4_RULES]],
+    ))
+    r = subprocess.run(["sysctl", "-n", "net.ipv6.conf.all.disable_ipv6"], capture_output=True, text=True)
+    if r.stdout.strip() != "1" and _cmd_exists("ip6tables-save"):
+        rules_backup_v6 = journal.backup_file(IPTABLES_V6_RULES)
+        _persist_ip6tables_v6()
+        entries.append(RollbackEntry(
+            action=f"persisted ip6tables rules to {IPTABLES_V6_RULES}",
+            path=IPTABLES_V6_RULES,
+            backup=rules_backup_v6,
+            undo=[] if rules_backup_v6 else [["rm", "-f", IPTABLES_V6_RULES]],
+        ))
+    return entries
+
+
 register(Control(
     id="3.5.4",
     title="Ensure iptables rules are saved",
     section="network",
     check=_check_iptables_persistent,
-    fix=None,  # Requires iptables-persistent or manual save
+    fix=_fix_iptables_persistent,
 ))
 
 

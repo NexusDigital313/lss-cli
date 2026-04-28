@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import sys
+
 from lss.lib import distro, journal, syslog
 from lss.lib.output import info, header, err, warn, print_result, print_summary, DIM, RESET, GREEN, YELLOW
 from lss.lib.registry import get_controls, CheckResult, RollbackEntry
@@ -52,10 +54,25 @@ def run_harden(args) -> int:
     """Run failing controls' fix functions, record rollback journal."""
     host = distro.detect()
     dry_run = bool(getattr(args, "dry_run", False))
+    interactive = bool(getattr(args, "interactive", False))
+
+    if interactive and dry_run:
+        # --interactive only makes sense with --confirm. Treat the combination
+        # as a no-op interactive: we'll show the per-control plan and ask, but
+        # we won't actually apply. Simpler to just disable interactive in
+        # dry-run mode since dry-run already shows the plan without prompts.
+        interactive = False
+
+    if interactive and not sys.stdin.isatty():
+        err("--interactive requires a TTY on stdin (for the y/N prompt). "
+            "Either run lss harden in a terminal, or drop --interactive.")
+        return 1
 
     info(f"Host:   {host.name}    Kernel: {host.kernel}")
     if dry_run:
         info("Mode:   dry-run — no changes will be made")
+    elif interactive:
+        info("Mode:   interactive harden — you will be prompted before each fix")
     else:
         info("Mode:   harden — changes WILL be applied")
 
@@ -89,7 +106,7 @@ def run_harden(args) -> int:
     header("Dry-run plan" if dry_run else "Hardening")
 
     journal_entries: dict[str, list[dict]] = {}
-    applied = skipped = failed = would_fix = 0
+    applied = skipped = failed = would_fix = declined = 0
 
     for ctrl in controls:
         if ctrl.check is None or ctrl.fix is None:
@@ -115,6 +132,33 @@ def run_harden(args) -> int:
             )
             would_fix += 1
             continue
+
+        # Interactive prompt — show context, ask y/N. Default is N (skip),
+        # so an accidental Enter on a live box doesn't apply a fix.
+        if interactive:
+            print()
+            print(f"{YELLOW}  ?{RESET} {ctrl.id}   {ctrl.title}")
+            print(f"{DIM}    Current: {result.detail or result.status}{RESET}")
+            if ctrl.id in DESTRUCTIVE_SERVICE_CONTROLS:
+                warn(f"    NOTE: this fix disables {DESTRUCTIVE_SERVICE_CONTROLS[ctrl.id]} — "
+                     "may break a service in production use.")
+            try:
+                response = input("    Apply fix? [y/N] ").strip().lower()
+            except EOFError:
+                response = ""
+            except KeyboardInterrupt:
+                print()
+                err("Aborted by operator (Ctrl-C). No further controls will be processed.")
+                # Write whatever journal we have so partial state is recoverable.
+                if journal_entries:
+                    jpath = journal.write_run(run_id, journal_entries)
+                    info(f"Partial run journaled at: {jpath}")
+                journal.set_current_run_id(None)
+                return 130  # 128 + SIGINT
+            if response not in ("y", "yes"):
+                print(f"{DIM}    skipped (operator declined){RESET}")
+                declined += 1
+                continue
 
         # Apply the fix
         try:
@@ -154,6 +198,9 @@ def run_harden(args) -> int:
         info("Re-run with --confirm to apply.")
         return 0
 
+    # Interactive summary appended below the standard one.
+    interactive_note = f"   Declined: {declined}" if interactive else ""
+
     # Always write the journal, even when no changes were made — this gives
     # `lss rollback --last` a stable meaning (an empty run is a no-op, not a
     # missing-journal error).
@@ -161,7 +208,7 @@ def run_harden(args) -> int:
     journal.set_current_run_id(None)
 
     print()
-    info(f"Applied: {applied}   Skipped (already pass): {skipped}   Failed: {failed}")
+    info(f"Applied: {applied}   Skipped (already pass): {skipped}   Failed: {failed}{interactive_note}")
     syslog.info(
         f"harden complete run_id={run_id} applied={applied} "
         f"skipped={skipped} failed={failed}"

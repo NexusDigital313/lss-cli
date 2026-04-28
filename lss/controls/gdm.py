@@ -5,7 +5,31 @@ from __future__ import annotations
 import subprocess
 from pathlib import Path
 
+from lss.lib import journal
 from lss.lib.registry import Control, CheckResult, RollbackEntry, register
+
+
+def _dconf_write(path: str, content: str, key_human: str) -> RollbackEntry:
+    """Write a dconf db fragment and run `dconf update`.
+
+    Backs up any prior file content; if the file did not exist, rollback
+    removes it and re-runs `dconf update` to reconcile the db.
+    """
+    p = Path(path)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    bkp = journal.backup_file(str(p))
+    p.write_text(content)
+    subprocess.run(["dconf", "update"], capture_output=True)
+    return RollbackEntry(
+        action=f"configured {key_human} via {path}",
+        path=str(p),
+        backup=bkp,
+        undo=(
+            [["dconf", "update"]]
+            if bkp
+            else [["rm", "-f", "--", str(p)], ["dconf", "update"]]
+        ),
+    )
 
 
 def _gdm_installed() -> bool:
@@ -48,12 +72,26 @@ def _check_gdm_banner() -> CheckResult:
     return CheckResult("fail", "GDM login banner not configured")
 
 
+_GDM_BANNER_CONTENT = """[org/gnome/login-screen]
+banner-message-enable=true
+banner-message-text='Authorized uses only. All activity may be monitored and reported.'
+"""
+
+
+def _fix_gdm_banner() -> list[RollbackEntry]:
+    return [_dconf_write(
+        "/etc/dconf/db/gdm.d/01-banner-message",
+        _GDM_BANNER_CONTENT,
+        "GDM login banner",
+    )]
+
+
 register(Control(
     id="1.8.2",
     title="Ensure GDM login banner is configured",
     section="boot",
     check=_check_gdm_banner,
-    fix=None,  # Site-specific
+    fix=_fix_gdm_banner,
 ))
 
 
@@ -74,12 +112,25 @@ def _check_gdm_user_list() -> CheckResult:
     return CheckResult("fail", "GDM user list not disabled")
 
 
+_GDM_USER_LIST_CONTENT = """[org/gnome/login-screen]
+disable-user-list=true
+"""
+
+
+def _fix_gdm_user_list() -> list[RollbackEntry]:
+    return [_dconf_write(
+        "/etc/dconf/db/gdm.d/00-login-screen",
+        _GDM_USER_LIST_CONTENT,
+        "GDM disable-user-list",
+    )]
+
+
 register(Control(
     id="1.8.3",
     title="Ensure GDM disable-user-list option is enabled",
     section="boot",
     check=_check_gdm_user_list,
-    fix=None,
+    fix=_fix_gdm_user_list,
 ))
 
 
@@ -101,12 +152,27 @@ def _check_gdm_screenlock() -> CheckResult:
     return CheckResult("warn", "GDM screen lock not explicitly configured")
 
 
+_GDM_SCREENLOCK_CONTENT = """[org/gnome/desktop/screensaver]
+lock-enabled=true
+lock-delay=uint32 0
+idle-delay=uint32 900
+"""
+
+
+def _fix_gdm_screenlock() -> list[RollbackEntry]:
+    return [_dconf_write(
+        "/etc/dconf/db/local.d/00-screensaver",
+        _GDM_SCREENLOCK_CONTENT,
+        "GDM idle screen lock",
+    )]
+
+
 register(Control(
     id="1.8.4",
     title="Ensure GDM screen locks when the user is idle",
     section="boot",
     check=_check_gdm_screenlock,
-    fix=None,
+    fix=_fix_gdm_screenlock,
 ))
 
 
@@ -124,12 +190,26 @@ def _check_gdm_lock_override() -> CheckResult:
     return CheckResult("warn", "GDM screen lock override protection not configured")
 
 
+_GDM_SCREENLOCK_LOCK_CONTENT = """/org/gnome/desktop/screensaver/lock-enabled
+/org/gnome/desktop/screensaver/lock-delay
+/org/gnome/desktop/screensaver/idle-delay
+"""
+
+
+def _fix_gdm_lock_override() -> list[RollbackEntry]:
+    return [_dconf_write(
+        "/etc/dconf/db/local.d/locks/00-screensaver",
+        _GDM_SCREENLOCK_LOCK_CONTENT,
+        "GDM screen-lock override protection",
+    )]
+
+
 register(Control(
     id="1.8.5",
     title="Ensure GDM screen locks cannot be overridden",
     section="boot",
     check=_check_gdm_lock_override,
-    fix=None,
+    fix=_fix_gdm_lock_override,
 ))
 
 
@@ -159,12 +239,26 @@ def _check_gdm_automount() -> CheckResult:
     return CheckResult("warn", "GDM automatic mounting not explicitly disabled")
 
 
+_GDM_AUTOMOUNT_CONTENT = """[org/gnome/desktop/media-handling]
+automount=false
+automount-open=false
+"""
+
+
+def _fix_gdm_automount() -> list[RollbackEntry]:
+    return [_dconf_write(
+        "/etc/dconf/db/local.d/00-media-automount",
+        _GDM_AUTOMOUNT_CONTENT,
+        "GDM removable-media automount disabled",
+    )]
+
+
 register(Control(
     id="1.8.6",
     title="Ensure GDM automatic mounting of removable media is disabled",
     section="boot",
     check=_check_gdm_automount,
-    fix=None,
+    fix=_fix_gdm_automount,
 ))
 
 
@@ -182,12 +276,25 @@ def _check_gdm_automount_lock() -> CheckResult:
     return CheckResult("warn", "GDM automount override protection not configured")
 
 
+_GDM_AUTOMOUNT_LOCK_CONTENT = """/org/gnome/desktop/media-handling/automount
+/org/gnome/desktop/media-handling/automount-open
+"""
+
+
+def _fix_gdm_automount_lock() -> list[RollbackEntry]:
+    return [_dconf_write(
+        "/etc/dconf/db/local.d/locks/00-media-automount",
+        _GDM_AUTOMOUNT_LOCK_CONTENT,
+        "GDM automount override protection",
+    )]
+
+
 register(Control(
     id="1.8.7",
     title="Ensure GDM disabling automatic mounting cannot be overridden",
     section="boot",
     check=_check_gdm_automount_lock,
-    fix=None,
+    fix=_fix_gdm_automount_lock,
 ))
 
 
@@ -196,6 +303,16 @@ register(Control(
 def _check_gdm_autorun() -> CheckResult:
     if not _gdm_installed():
         return CheckResult("pass", "GDM not installed")
+    # Prefer the dconf db file (readable without a user dbus session) over
+    # gsettings, which can return "No such key" when run from root's non-
+    # session shell even after the system default is correctly set.
+    for conf_path in [
+        "/etc/dconf/db/local.d/00-autorun-never",
+        "/etc/dconf/db/local.d/00-media-automount",
+    ]:
+        p = Path(conf_path)
+        if p.exists() and "autorun-never=true" in p.read_text().replace(" ", ""):
+            return CheckResult("pass")
     r = subprocess.run(
         ["gsettings", "get", "org.gnome.desktop.media-handling", "autorun-never"],
         capture_output=True, text=True,
@@ -205,10 +322,23 @@ def _check_gdm_autorun() -> CheckResult:
     return CheckResult("warn", "GDM autorun-never not set")
 
 
+_GDM_AUTORUN_CONTENT = """[org/gnome/desktop/media-handling]
+autorun-never=true
+"""
+
+
+def _fix_gdm_autorun() -> list[RollbackEntry]:
+    return [_dconf_write(
+        "/etc/dconf/db/local.d/00-autorun-never",
+        _GDM_AUTORUN_CONTENT,
+        "GDM autorun-never",
+    )]
+
+
 register(Control(
     id="1.8.8",
     title="Ensure GDM autorun-never is enabled",
     section="boot",
     check=_check_gdm_autorun,
-    fix=None,
+    fix=_fix_gdm_autorun,
 ))

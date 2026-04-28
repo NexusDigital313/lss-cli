@@ -11,13 +11,20 @@ from pathlib import Path
 import pytest
 
 
-def test_all_204_controls_register():
-    """Importing list_controls should populate the registry with 204 unique IDs."""
+EXPECTED_CONTROL_COUNT = 206  # 204 CIS + LSS-001..005
+
+
+def test_all_controls_register():
+    """Importing list_controls should populate the registry with the expected
+    number of unique IDs. Bump EXPECTED_CONTROL_COUNT when adding new LSS-XXX
+    controls or new CIS coverage."""
     import lss.list_controls  # noqa: F401  (side-effect: imports every controls/* module)
     from lss.lib.registry import get_controls
 
     ctrls = get_controls()
-    assert len(ctrls) == 204, f"expected 204 controls, got {len(ctrls)}"
+    assert len(ctrls) == EXPECTED_CONTROL_COUNT, (
+        f"expected {EXPECTED_CONTROL_COUNT} controls, got {len(ctrls)}"
+    )
 
     ids = [c.id for c in ctrls]
     assert len(set(ids)) == len(ids), "duplicate control IDs detected"
@@ -139,13 +146,13 @@ def test_report_html_escapes_user_data(tmp_path, monkeypatch):
 
 
 def test_cli_list_runs_clean():
-    """`python -m lss list` exits 0 and emits the 204-controls header."""
+    """`python -m lss list` exits 0 and emits the controls-count header."""
     r = subprocess.run(
         [sys.executable, "-m", "lss", "--no-color", "list"],
         capture_output=True, text=True,
     )
     assert r.returncode == 0, f"exit {r.returncode}, stderr: {r.stderr}"
-    assert "204" in r.stdout
+    assert f"{EXPECTED_CONTROL_COUNT} controls" in r.stdout
 
 
 def test_harden_dry_run_makes_no_changes(tmp_path, monkeypatch):

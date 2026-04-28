@@ -2,6 +2,54 @@
 
 All notable changes to The Linux Security Suite are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.0] — 2026-04-23
+
+### Added
+- **47 new auto-fix functions** covering CIS controls that were previously audit-only, plus **2 new LSS-extra detection controls**. New fixes:
+  - **services (2.3.1–2.3.5):** NIS/rsh/talk/telnet/LDAP client packages are now removed via `apt-get remove` (rollback reinstalls with configs preserved).
+  - **banners (1.7.4–1.7.6):** `/etc/motd`, `/etc/issue`, `/etc/issue.net` get chmod 0644 + chown root:root with pre-change ownership/mode recorded for exact rollback.
+  - **network (3.2.1, 3.5.1.1, 3.5.1.2, 3.5.3.1–3, 3.5.4):** IPv6 forwarding disabled via sysctl, iptables/nftables installed on demand, ip6tables default-deny + loopback + established mirroring the IPv4 fixes, and iptables-save now persists rules to `/etc/iptables/rules.{v4,v6}` automatically.
+  - **logging (4.1.1.1, 4.1.1.3, 4.2.1.2, 4.2.2.1, 4.2.3):** auditd and rsyslog install fixes, auditd `max_log_file = 32` MB default, journald `Compress=yes`, and world-readable `/var/log` files get their world bits stripped (per-file mode recorded for exact rollback).
+  - **auth/pam (5.2.12, 5.3.2, 5.3.5, 5.3.6, LSS-002):** SSH `ClientAliveInterval` restored to 300s when it's 0, faillock policy written to `/etc/security/faillock.conf`, login.defs `ENCRYPT_METHOD SHA512` and `PASS_MIN_DAYS 1`, and `/etc/securetty` trimmed to (console, tty1) when over-permissive.
+  - **filesystem/kernel (1.3.1, 1.3.2, 1.6.1, LSS-001):** AIDE and AppArmor install via the shared package helper; `/etc/cron.daily/aide` installed for CIS 1.3.2 periodic integrity checks; RHEL crypto-policies reset to DEFAULT, or Debian openssl `MinProtocol = TLSv1.2`.
+  - **filesystem perms (6.1.9):** world-writable files have the `o+w` bit stripped with per-file original mode recorded for exact rollback.
+  - **users (5.4.3, 6.2.2, 6.2.9, 6.2.10, 6.2.11, 6.2.12, 6.2.13, 6.2.14, LSS-003):** root's default GID forced to 0 via usermod; missing home directories created with `/etc/skel` contents and correct owner/mode; top-level home-dir ownership and 0750 mode fixed with per-entry rollback; `.forward`, `.netrc`, and `.rhosts` renamed to `.lss-disabled` (not deleted); shell-dotfile lines with unsafe `PATH=` get commented with `# [LSS-DISABLED]` prefix after backup.
+  - **GDM (1.8.2–1.8.8):** seven dconf-database fixes — login banner, `disable-user-list`, idle screen lock + override lock, removable-media automount + override lock, `autorun-never`. Each writes into `/etc/dconf/db/{gdm,local}.d/`, runs `dconf update`, and records the file for rollback.
+  - **boot (2.1.2):** when chronyd is active but `chrony.conf` has no `server`/`pool` lines, append `pool 2.pool.ntp.org iburst` and `pool time.nist.gov iburst` as a safe starting point.
+- `lss/lib/pkg.py` shared helper: `install(pkg)` / `remove(pkg)` / `is_installed(pkg)` with Debian + RHEL backends, noninteractive env, and argv-list rollback.
+- **LSS-004 — AppArmor service condition-skip detection on Debian/Kali Live+persistence boots.** Debian's `/usr/lib/systemd/system/apparmor.service` ships with `ConditionPathExists=!/run/live/overlay/work`, which makes the service skip on Live boots — including persistent-overlay Live boots where the operator expects a normal install experience. No standard CIS scanner catches this because the kernel module is loaded and `aa-status` reports normally; only inspecting the systemd `ConditionResult` exposes the gap. Audit-only in v0.5; the detail string includes a one-line systemd drop-in remediation.
+- **LSS-005 — Forensic-grade user execve auditing (beyond CIS 4.1.13).** CIS 4.1.13 captures only privilege-transition execves (sudo/su/pkexec/setuid binaries — the `euid!=uid && euid=0` filter). LSS-005 detects whether a broader rule covering every real-user execve (`auid >= 1000`) is loaded and surfaces the gap with a remediation note. Audit-only by design — the broader rule produces audit log volume proportional to user shell activity (potentially hundreds of MB per day on an interactive host) and should be enabled deliberately, not as part of a default harden pass.
+- **`lss harden --interactive` (`-i`).** Per-control y/N approval gate. With `--confirm --interactive`, the harden engine prints each failing control's id, title, current state, and (for destructive-service controls) a warning, then prompts y/N before applying the fix. Default response is N (skip), so an accidental Enter on a live customer box doesn't apply a fix. Ctrl-C aborts the run cleanly, journals partial state, and exits 130. EOF (Ctrl-D) treats the current control as declined and continues. Refuses to start if stdin isn't a TTY.
+- **`lss report --baseline <path>`.** Renders a before/after delta against a previous audit JSON. New table columns show the prior status (Before), the current status (After), and a Change pill (`Fixed` / `Regressed` / `Still failing` / `Unchanged` / `New`). A delta-summary block above the per-control table aggregates the counts. Without `--baseline`, the report renders current-state-only (existing behavior).
+
+### Changed
+- Control 2.4 (nonessential services) detail now lists actual listening ports and points to `ss -tlnp` instead of a bare count.
+- Control 4.1.2 (audit backlog) now tells the operator exactly what to add to `GRUB_CMDLINE_LINUX` and warns that GRUB edits are intentionally manual (bad kernel-param edits can brick a host and rollback can't reach a box that won't boot).
+- Control 1.4.2 (bootloader password) detail now names `grub-mkpasswd-pbkdf2` and the `set superusers` line explicitly.
+- Control 1.4.4 (single-user mode auth) detail now suggests `passwd root` or sulogin rescue-service wiring.
+- Control 1.9 (updates available) detail now names the exact command and reminds the operator to read changelogs first.
+
+### Intentionally not auto-fixed (31 controls — documented in code)
+- **Partition layout (1.1.2–1.1.7):** moving `/tmp`, `/var`, `/var/tmp`, `/var/log`, `/var/log/audit`, `/home` to separate filesystems requires repartitioning — not something a hardening tool can do without downtime and a recovery plan.
+- **Bootloader / kernel-param edits (1.4.2, 1.6.2, 4.1.2):** a bad GRUB write can render the host unbootable and rollback can't reach a machine that doesn't boot. Detail strings name the exact command to run.
+- **AppArmor enforcement (1.6.3):** moving a profile from complain to enforce can break running apps. Operator must review each profile first.
+- **User-merge decisions (6.2.1, 6.2.3–6.2.7):** duplicate UIDs/GIDs/usernames/groupnames require an operator to decide which account is real. Detail strings name the offending IDs.
+- **Account-state decisions (5.4.2 empty passwords, 6.2.15 invalid shells):** no safe auto-choice between `passwd -l`, `passwd -d`, `/usr/sbin/nologin`, or a real password — getting this wrong locks users out.
+- **File-ownership scans that could mask evidence (6.1.10, 6.1.11, 6.1.13):** auto-chowning an unowned file or stripping a SUID bit can destroy evidence of a compromise. These stay audit-only by design.
+- **Site-specific (1.2.1 repos, 1.2.2 GPG keys, 2.4 nonessential services, 3.5.2.4 firewall rules per port, 3.5.5 unused interfaces, 3.6 wireless, 6.2.8 root PATH):** organizationally-driven choices, not a compliance checkbox.
+- **Workstation choices (1.8.1 GDM removal):** would strip the user's desktop.
+- **Big-hammer actions (1.9 apt upgrade, 1.4.4 root password):** interactive or too disruptive for an unattended pass.
+- **PAM stack edits (5.3.3 password reuse limit):** correctly editing the PAM password stack across Debian (pam-auth-update profile mechanism), RHEL/Fedora (authselect), and bare Linux (direct edit with `pam_unix` success-jump arithmetic) is its own subsystem of work. Earlier LSS versions wrote `remember=5` to `/etc/security/pwquality.conf`, which `pam_pwquality.so` does not actually process — the policy was never enforced. Rather than ship another half-correct fix that could lock customers out of their own auth, 5.3.3 is documented audit-only with a precise remediation command in the detail string. Full automated remediation is planned for v0.5.1.
+
+All audit-only controls have specific detail strings telling the operator the exact command to run.
+
+### Changed (existing checks)
+- 1.6.2, 1.6.3 (AppArmor) detail strings now name `apparmor=1 security=apparmor` as the GRUB addition and `aa-enforce /etc/apparmor.d/<profile>` as the per-profile remediation.
+- 1.8.8 (GDM autorun-never) check now prefers the dconf db file over `gsettings`, which returns "no such key" when run from root's non-session shell even after the system default is correct.
+
+### Package installs vs. removals that affect a running service
+CUPS/NFS/Apache/Postfix/etc. (2.2.x) remain gated by the existing destructive-service warning in `harden.py`.
+
 ## [0.4.0] — 2026-04-22
 
 ### Added

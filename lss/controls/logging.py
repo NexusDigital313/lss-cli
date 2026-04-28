@@ -5,7 +5,7 @@ from __future__ import annotations
 import subprocess
 from pathlib import Path
 
-from lss.lib import journal
+from lss.lib import journal, pkg
 from lss.lib.registry import Control, CheckResult, RollbackEntry, register
 
 
@@ -40,7 +40,7 @@ register(Control(
     title="Ensure auditd is installed",
     section="logging",
     check=_check_auditd_installed,
-    fix=None,  # Package installation requires user decision
+    fix=lambda: pkg.install("auditd"),
 ))
 
 
@@ -94,12 +94,41 @@ def _check_audit_log_size() -> CheckResult:
     return CheckResult("fail", "max_log_file not set in auditd.conf")
 
 
+def _fix_audit_log_size() -> list[RollbackEntry]:
+    """Set max_log_file = 32 (MB) in /etc/audit/auditd.conf.
+
+    32MB is a conservative default well above the CIS minimum of 8MB;
+    operators with specific retention needs can adjust manually.
+    """
+    conf = Path("/etc/audit/auditd.conf")
+    if not conf.exists():
+        return []
+    bkp = journal.backup_file(str(conf))
+    lines = conf.read_text().splitlines(keepends=True)
+    found = False
+    for i, line in enumerate(lines):
+        if line.strip().startswith("max_log_file") and "max_log_file_action" not in line:
+            lines[i] = "max_log_file = 32\n"
+            found = True
+            break
+    if not found:
+        if lines and not lines[-1].endswith("\n"):
+            lines.append("\n")
+        lines.append("max_log_file = 32\n")
+    conf.write_text("".join(lines))
+    return [RollbackEntry(
+        action="set auditd max_log_file = 32 MB",
+        path=str(conf),
+        backup=bkp,
+    )]
+
+
 register(Control(
     id="4.1.1.3",
     title="Ensure audit log storage size is configured",
     section="logging",
     check=_check_audit_log_size,
-    fix=None,  # Requires site-specific sizing
+    fix=_fix_audit_log_size,
 ))
 
 
@@ -227,12 +256,39 @@ def _check_journald_compress() -> CheckResult:
     return CheckResult("pass", "default is yes")
 
 
+def _fix_journald_compress() -> list[RollbackEntry]:
+    conf = Path("/etc/systemd/journald.conf")
+    if not conf.exists():
+        return []
+    bkp = journal.backup_file(str(conf))
+    lines = conf.read_text().splitlines(keepends=True)
+    found = False
+    for i, line in enumerate(lines):
+        s = line.strip()
+        if s.startswith("Compress=") or s.startswith("#Compress="):
+            lines[i] = "Compress=yes\n"
+            found = True
+            break
+    if not found:
+        if lines and not lines[-1].endswith("\n"):
+            lines.append("\n")
+        lines.append("Compress=yes\n")
+    conf.write_text("".join(lines))
+    subprocess.run(["systemctl", "restart", "systemd-journald"], capture_output=True)
+    return [RollbackEntry(
+        action="set journald Compress=yes",
+        path=str(conf),
+        backup=bkp,
+        undo=[["systemctl", "restart", "systemd-journald"]],
+    )]
+
+
 register(Control(
     id="4.2.1.2",
     title="Ensure journald is configured to compress large log files",
     section="logging",
     check=_check_journald_compress,
-    fix=None,  # Default is usually correct
+    fix=_fix_journald_compress,
 ))
 
 
@@ -256,5 +312,5 @@ register(Control(
     title="Ensure rsyslog is installed",
     section="logging",
     check=_check_rsyslog,
-    fix=None,  # Package installation
+    fix=lambda: pkg.install("rsyslog"),
 ))

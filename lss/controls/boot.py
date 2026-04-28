@@ -20,7 +20,12 @@ def _check_bootloader_password() -> CheckResult:
             text = p.read_text()
             if "password" in text.lower() or "set superusers" in text:
                 return CheckResult("pass")
-            return CheckResult("fail", "no bootloader password set in grub.cfg")
+            return CheckResult(
+                "fail",
+                "no bootloader password in grub.cfg. Run `grub-mkpasswd-pbkdf2`, "
+                "add the hash to /etc/grub.d/40_custom as `password_pbkdf2 root <hash>` "
+                "with a `set superusers=\"root\"` line above it, then `update-grub`.",
+            )
     return CheckResult("warn", "grub.cfg not found")
 
 
@@ -93,7 +98,12 @@ def _check_single_user_auth() -> CheckResult:
             pw = parts[1] if len(parts) > 1 else ""
             if pw and pw not in ("*", "!", "!!"):
                 return CheckResult("pass")
-            return CheckResult("fail", "root has no password set — single user mode unprotected")
+            return CheckResult(
+                "fail",
+                "root has no password (single-user mode would drop to a root shell with no challenge). "
+                "Set one with `sudo passwd root` — or lock the account and rely on sulogin by editing "
+                "/usr/lib/systemd/system/rescue.service to `ExecStart=-/usr/lib/systemd/systemd-sulogin-shell rescue`.",
+            )
     return CheckResult("fail", "root not found in /etc/shadow")
 
 
@@ -141,6 +151,14 @@ register(Control(
 
 # ---- CIS 2.1.2: Ensure chrony is configured (if chrony is in use) ----
 
+def _chrony_conf_path() -> Path | None:
+    for conf in ["/etc/chrony/chrony.conf", "/etc/chrony.conf"]:
+        p = Path(conf)
+        if p.exists():
+            return p
+    return None
+
+
 def _check_chrony_config() -> CheckResult:
     # Only relevant if chrony is the active time sync
     r = subprocess.run(["systemctl", "is-active", "chronyd"], capture_output=True, text=True)
@@ -149,14 +167,44 @@ def _check_chrony_config() -> CheckResult:
         if r2.stdout.strip() != "active":
             return CheckResult("pass", "chrony not in use")
 
-    for conf in ["/etc/chrony/chrony.conf", "/etc/chrony.conf"]:
-        p = Path(conf)
-        if p.exists():
-            text = p.read_text()
-            if "server" in text or "pool" in text:
-                return CheckResult("pass")
-            return CheckResult("fail", f"no server/pool configured in {conf}")
-    return CheckResult("warn", "chrony config not found")
+    p = _chrony_conf_path()
+    if p is None:
+        return CheckResult("warn", "chrony config not found")
+    text = p.read_text()
+    if "server" in text or "pool" in text:
+        return CheckResult("pass")
+    return CheckResult("fail", f"no server/pool configured in {p}")
+
+
+_CHRONY_DEFAULT_POOLS = """\
+
+# Added by LSS to satisfy CIS 2.1.2 — NTP sources are required for chrony to
+# steer the clock. Replace with organizationally-approved servers if needed.
+pool 2.pool.ntp.org iburst
+pool time.nist.gov iburst
+"""
+
+
+def _fix_chrony_config() -> list[RollbackEntry]:
+    """Append public NTP pool entries if chrony.conf has none.
+
+    Operators with internal time sources should replace these with their own
+    servers — the default is a safe starting point, not a policy statement.
+    """
+    p = _chrony_conf_path()
+    if p is None:
+        return []
+    from lss.lib import journal as _j
+    bkp = _j.backup_file(str(p))
+    text = p.read_text()
+    if "server" in text or "pool" in text:
+        return []
+    p.write_text(text.rstrip() + _CHRONY_DEFAULT_POOLS)
+    return [RollbackEntry(
+        action=f"appended default NTP pool entries to {p}",
+        path=str(p),
+        backup=bkp,
+    )]
 
 
 register(Control(
@@ -164,5 +212,5 @@ register(Control(
     title="Ensure chrony is configured",
     section="boot",
     check=_check_chrony_config,
-    fix=None,  # Site-specific NTP servers
+    fix=_fix_chrony_config,
 ))

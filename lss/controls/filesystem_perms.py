@@ -188,7 +188,7 @@ def _check_world_writable() -> CheckResult:
         r = subprocess.run(
             ["find", "/", "-xdev", "-type", "f", "-perm", "-0002",
              "-not", "-path", "/proc/*", "-not", "-path", "/sys/*"],
-            capture_output=True, text=True, timeout=30,
+            capture_output=True, text=True, timeout=120,
         )
         files = [f for f in r.stdout.strip().splitlines() if f]
         if not files:
@@ -200,13 +200,54 @@ def _check_world_writable() -> CheckResult:
         return CheckResult("warn", "scan timed out")
 
 
+def _fix_world_writable() -> list[RollbackEntry]:
+    """Strip the world-write bit from every regular file that has it.
+
+    Uses `find -xdev` so we never cross filesystems (network mounts, bind
+    mounts, container overlays). Records each file's original mode so
+    rollback restores it exactly — we are not forcing a blanket 0644.
+    """
+    try:
+        r = subprocess.run(
+            ["find", "/", "-xdev", "-type", "f", "-perm", "-0002",
+             "-not", "-path", "/proc/*", "-not", "-path", "/sys/*"],
+            capture_output=True, text=True, timeout=120,
+        )
+    except subprocess.TimeoutExpired:
+        return []
+    entries: list[RollbackEntry] = []
+    import os as _os, stat as _stat
+    for fp in r.stdout.splitlines():
+        if not fp:
+            continue
+        try:
+            st = _os.stat(fp, follow_symlinks=False)
+        except (OSError, PermissionError):
+            continue
+        if not _stat.S_ISREG(st.st_mode):
+            continue
+        prev = _stat.S_IMODE(st.st_mode)
+        if not (prev & 0o002):
+            continue
+        new = prev & ~0o002
+        try:
+            _os.chmod(fp, new)
+        except (OSError, PermissionError):
+            continue
+        entries.append(RollbackEntry(
+            action=f"stripped world-write from {fp} ({oct(prev)} -> {oct(new)})",
+            undo=[["chmod", oct(prev)[2:].zfill(4), fp]],
+        ))
+    return entries
+
+
 register(Control(
     id="6.1.9",
     title="Ensure no world-writable files exist",
     section="filesystem",
     level=1,
     check=_check_world_writable,
-    fix=None,  # No auto-fix — too risky to chmod unknown files
+    fix=_fix_world_writable,
 ))
 
 
@@ -217,7 +258,7 @@ def _check_unowned() -> CheckResult:
         r = subprocess.run(
             ["find", "/", "-xdev", "-nouser",
              "-not", "-path", "/proc/*", "-not", "-path", "/sys/*"],
-            capture_output=True, text=True, timeout=30,
+            capture_output=True, text=True, timeout=120,
         )
         files = [f for f in r.stdout.strip().splitlines() if f]
         if not files:
@@ -246,7 +287,7 @@ def _check_ungrouped() -> CheckResult:
         r = subprocess.run(
             ["find", "/", "-xdev", "-nogroup",
              "-not", "-path", "/proc/*", "-not", "-path", "/sys/*"],
-            capture_output=True, text=True, timeout=30,
+            capture_output=True, text=True, timeout=120,
         )
         files = [f for f in r.stdout.strip().splitlines() if f]
         if not files:
@@ -276,7 +317,7 @@ def _check_sticky_bit() -> CheckResult:
             ["find", "/", "-xdev", "-type", "d", "-perm", "-0002",
              "!", "-perm", "-1000",
              "-not", "-path", "/proc/*", "-not", "-path", "/sys/*"],
-            capture_output=True, text=True, timeout=30,
+            capture_output=True, text=True, timeout=120,
         )
         dirs = [d for d in r.stdout.strip().splitlines() if d]
         if not dirs:
@@ -293,7 +334,7 @@ def _fix_sticky_bit() -> list[RollbackEntry]:
         ["find", "/", "-xdev", "-type", "d", "-perm", "-0002",
          "!", "-perm", "-1000",
          "-not", "-path", "/proc/*", "-not", "-path", "/sys/*"],
-        capture_output=True, text=True, timeout=30,
+        capture_output=True, text=True, timeout=120,
     )
     entries = []
     for d in r.stdout.strip().splitlines():

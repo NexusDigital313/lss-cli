@@ -1,56 +1,51 @@
-# The Linux Security Suite
+# Linux Security Suite
 
-**Audit, harden, and roll back Linux hosts against the CIS Benchmark — in one command.**
+**Audit, harden, and roll back Linux hosts against the CIS Benchmark — with a safety net.**
 
-LSS scans your system against **204 CIS Benchmark controls**, fixes the failures, records every change in a rollback journal, and produces a printable HTML report. Built for VPS operators, indie hackers, and small ops teams who want CIS-grade hardening without a six-figure GRC platform.
+[![Version](https://img.shields.io/badge/version-0.5.0-blue.svg)](CHANGELOG.md)
+[![License](https://img.shields.io/badge/license-Commercial-lightgrey.svg)](LICENSE)
+[![Python](https://img.shields.io/badge/python-3.10%2B-blue.svg)](https://www.python.org/downloads/)
+
+LSS scans your Linux host against **204 CIS Benchmark controls**, auto-fixes **173 of them**, and records every change in a rollback journal so a bad pass is one command away from being reversed. No agent, no cloud, no six-figure GRC platform — a single CLI for operators who want CIS-grade hardening they can actually undo.
 
 ```
 $ sudo lss audit
-$ sudo lss harden --confirm
-$ sudo lss rollback --last        # something broke? undo it
-$ sudo lss report -o audit.html
+$ sudo lss harden --confirm          # applies 173 auto-fixes, skips the 31 that shouldn't be automated
+$ sudo lss rollback --last           # something broke? reverse it
+$ sudo lss report -o audit.html      # printable, auditor-friendly HTML
 ```
 
-## What it covers
+> **Preview the output**: [`examples/sample-audit-report.html`](examples/sample-audit-report.html) is a synthetic 204-control report rendered from real LSS output. Open it in a browser to see what a customer-facing audit deliverable looks like.
 
-19 control modules, 204 controls total:
-
-| Area | Examples |
-| --- | --- |
-| Filesystem | mount options, partition layout, sticky bits, permissions |
-| Kernel | sysctl hardening, ASLR, kernel module restrictions |
-| Network | IPv4/IPv6 hardening, ICMP, source routing |
-| Firewall | UFW / nftables baseline rules |
-| Services | unnecessary daemons, time sync, MTA |
-| SSH | ciphers, MACs, login restrictions, idle timeout |
-| Auth & PAM | password quality, lockout, sudo logging |
-| Logging & Audit | auditd rules, journald, log retention |
-| Users | shell, account expiry, root login |
-| Boot | GRUB password, single-user auth |
-| Banners, cron, GDM, file perms, misc, extras | … |
-
-Run `lss list` to see every control with its ID, section, and whether it has an automatic fix.
+---
 
 ## Install
 
-```
+```bash
 pip install lss
 ```
 
 Or from a release tarball:
 
+```bash
+pip install lss-0.5.0.tar.gz
 ```
-pip install lss-0.1.0.tar.gz
-```
+
+The Gumroad bundle ships `SHA256SUMS` alongside the wheel and sdist. Verify with `sha256sum -c SHA256SUMS` before installing.
+
+---
 
 ## Quick start
 
-```
-# Read-only audit — no changes
+```bash
+# Read-only audit — no changes, writes nothing
 sudo lss audit
 
-# Apply every available auto-fix
+# Apply every available auto-fix (173 of 204 controls)
 sudo lss harden --confirm
+
+# Preview what harden would do, without touching the system
+sudo lss harden --confirm --dry-run
 
 # Cherry-pick controls
 sudo lss harden --confirm --control 5.2.3 --control 5.4.1.1
@@ -58,50 +53,140 @@ sudo lss harden --confirm --control 5.2.3 --control 5.4.1.1
 # Undo the most recent harden run
 sudo lss rollback --last
 
-# Undo a single control
+# Undo a single control across any past run
 sudo lss rollback --control 5.2.3
 
-# Generate a printable HTML report from the last audit
+# Machine-readable audit output (stdout is pure JSON; decorative output on stderr)
+sudo lss audit --json > audit.json
+
+# Printable HTML report
 sudo lss report -o ~/audit.html
 
-# Full command reference with consequences
+# Full command reference with consequences called out
 lss help-all
 ```
+
+---
+
+## Coverage
+
+**204 CIS Benchmark controls** across 19 modules. The honest breakdown:
+
+| | Count | What it means |
+|---|---|---|
+| **Automated fix** | 173 (85%) | `lss harden` applies the fix and records a rollback entry |
+| **Audit-only by design** | 31 (15%) | Flagged with an exact remediation command in the detail string |
+
+**Why 31 controls stay audit-only** (and won't be auto-fixed):
+
+- **Bootloader/kernel-param edits** (1.4.2, 1.6.2, 4.1.2) — a bad GRUB write can render the host unbootable, and rollback can't reach a box that won't boot
+- **Partition layout** (1.1.2–1.1.7) — separating `/tmp`, `/var`, `/home` requires repartitioning with downtime and a recovery plan
+- **AppArmor enforce** (1.6.3) — moving a profile from complain → enforce can break running apps; operator must review
+- **Duplicate UIDs/usernames/groupnames** (6.2.1, 6.2.3–6.2.7) — requires an operator to decide which account is real
+- **Account-state decisions** (5.4.2, 6.2.15) — no safe auto-choice between `passwd -l` vs `passwd -d` vs `/usr/sbin/nologin`
+- **Evidence-destruction risks** (6.1.10, 6.1.11, 6.1.13) — auto-chowning an unowned file or stripping SUID can destroy forensic evidence
+- **Site-specific policies** (repos, firewall rules per port, unused interfaces, wireless) — not a compliance checkbox
+- **Big-hammer actions** (`apt upgrade`, setting root password) — too disruptive for an unattended pass
+
+See the [full list](CHANGELOG.md) and the [`examples/`](examples/) directory for what you actually get.
+
+### Modules
+
+| Area | Examples |
+|---|---|
+| Filesystem | mount options, partition layout, sticky bits, permissions |
+| Kernel | sysctl hardening, ASLR, kernel module restrictions |
+| Network | IPv4/IPv6 hardening, ICMP, source routing |
+| Firewall | UFW / nftables / iptables baseline, IPv4+IPv6 persistence |
+| Services | unnecessary daemons, NTP, MTA, NIS/rsh/telnet/talk/LDAP removal |
+| SSH | ciphers, MACs, login restrictions, idle timeout, faillock |
+| Auth & PAM | password quality, lockout, pwquality history, login.defs |
+| Logging & Audit | auditd rules, journald compression, log permissions |
+| Users | shell, account expiry, home directory creation, forward/netrc/rhosts |
+| Boot | GRUB password, single-user auth, bootloader hardening |
+| GDM | login banner, user-list, screen lock, removable-media policy |
+| Banners, cron, file perms, extras | … |
+
+Run `lss list` to see every control with its ID, section, and whether it has an auto-fix.
+
+---
 
 ## How rollback works
 
 Every change made by `lss harden` is appended to a journal under `/var/log/lss/journal/`. Each entry records:
 
-- Which control made the change
-- The exact undo command
+- The control that made the change
+- An **argv-list undo command** (never a shell string — no `shell=True` anywhere in the codebase, enforced by regression test)
 - A backup of any modified file
 - A run ID so you can target a specific harden run later
 
-`lss rollback --last` replays the journal in reverse. `lss rollback --run-id <id>` targets a specific past run. `lss rollback --control <id>` undoes a single control.
+`lss rollback --last` replays the journal in reverse order. `lss rollback --run-id <id>` targets a specific past run. `lss rollback --control <id>` undoes a single control across any run.
 
-## CIS profiles
+Legacy pre-v0.3 journal entries with string-form undos are **refused, not executed** — rollback warns the operator rather than invoking a shell. That guarantee is regression-tested.
 
-```
-sudo lss audit --profile server         # default
-sudo lss audit --profile workstation
-sudo lss audit --profile hardened
-```
+---
 
-## Output
+## How it compares
 
-- Colored terminal output by default (powered by `rich`)
-- `--no-color` for piping to files or scripts
-- `--json` for machine-readable output (works with `audit`)
-- `lss report` renders a styled, printable HTML report
+| | **LSS** | Lynis | OpenSCAP | Chef InSpec |
+|---|---|---|---|---|
+| CIS Benchmark coverage | 204 controls | ~270 tests | SCAP content (varies) | Depends on profile |
+| **Automated remediation** | ✅ 173/204 | ❌ audit-only | ⚠️ via SCAP remediation | ⚠️ via custom wrappers |
+| **Built-in rollback** | ✅ journaled, argv-undo | ❌ | ❌ | ❌ |
+| Dry-run mode | ✅ | N/A (audit-only) | ⚠️ content-dependent | ✅ |
+| Machine-readable output | ✅ JSON | partial | XML/ARF | JSON |
+| License | Commercial (eval permitted) | AGPL (enterprise paid) | LGPL | Apache 2.0 (Chef paid) |
+| Target user | VPS operators, indie hackers, small ops teams | Same + enterprise | Enterprise / gov / compliance | Enterprise DevOps |
+
+**Where LSS wins**: rollback, honest coverage story, modern CLI ergonomics, single-binary-ish install.
+**Where Lynis wins**: mature ecosystem, more checks, strong enterprise brand.
+**Where OpenSCAP wins**: official SCAP content, DISA-STIG integration.
+
+If you're a Fortune 500 buying through procurement, buy OpenSCAP or InSpec. If you operate a handful of VPS hosts and want something you can audit-and-undo in your sleep, LSS is built for you.
+
+---
 
 ## Requirements
 
-- Linux (Debian, Ubuntu, Kali tested; RHEL / Rocky in v1.1)
+- Linux — Debian 12, Ubuntu 22.04/24.04, Kali (primary targets). RHEL / Rocky / Alma supported for a subset of controls; full parity in v1.1.
 - Python 3.10+
-- Root for `audit`, `harden`, `rollback`, `report` (read-only commands like `list` and `help-all` do not require root)
+- Root for `audit`, `harden`, `rollback`, `report`. Read-only commands (`list`, `help-all`, `--version`) run unprivileged.
 
-## License
+---
 
-Commercial. See [LICENSE](LICENSE). Evaluation use is permitted on a single host in audit-only mode; production use requires a paid license.
+## Security
 
-For pricing and licensing: <https://linuxsecuritysuite.com>
+Found a vulnerability? See [SECURITY.md](SECURITY.md) for the private disclosure process. Do **not** open a public issue.
+
+---
+
+## Support
+
+- **Community**: GitHub issues for bugs, feature requests, and docs gaps.
+- **Commercial**: SLA-backed email support for Pro and Enterprise license holders. See [SUPPORT.md](SUPPORT.md) for tiers.
+
+---
+
+## License & pricing
+
+LSS is commercial software. Evaluation use is permitted on a single host in audit-only mode without a license key. Hardening and rollback on production hosts require a paid license.
+
+| Tier | For | Includes |
+|---|---|---|
+| **Solo** | Single operator, up to 5 hosts | Audit + harden + rollback, email support best-effort |
+| **Pro** | Small ops teams, up to 50 hosts | + priority support, early access, usage reports |
+| **Enterprise** | Fleets, regulated environments | + site license, SLA, onboarding, custom controls |
+
+Pricing and purchase at **<https://linuxsecuritysuite.com>**.
+
+See [LICENSE](LICENSE) for the full terms.
+
+---
+
+## Changelog
+
+See [CHANGELOG.md](CHANGELOG.md). Releases follow [Semantic Versioning](https://semver.org/).
+
+## Contributing
+
+Pull requests welcome for bug fixes and documentation improvements. See [CONTRIBUTING.md](CONTRIBUTING.md) for code rules (no `shell=True`, backup-before-modify, argv-list undos).

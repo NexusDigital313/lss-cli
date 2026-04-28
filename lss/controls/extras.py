@@ -36,12 +36,51 @@ def _check_crypto_policy() -> CheckResult:
     return CheckResult("skip", f"no crypto policy file on {distro.detect().family} family")
 
 
+def _fix_crypto_policy() -> list[RollbackEntry]:
+    """On RHEL family, set crypto policy to DEFAULT if currently LEGACY.
+
+    On Debian family, set openssl MinProtocol = TLSv1.2 in /etc/ssl/openssl.cnf.
+    No-op if neither config source is available (check returns skip).
+    """
+    rhel_conf = Path("/etc/crypto-policies/config")
+    if rhel_conf.exists():
+        prev = rhel_conf.read_text().strip()
+        r = subprocess.run(
+            ["update-crypto-policies", "--set", "DEFAULT"],
+            capture_output=True, text=True,
+        )
+        if r.returncode != 0:
+            raise RuntimeError(f"update-crypto-policies failed: {r.stderr.strip()}")
+        return [RollbackEntry(
+            action=f"set crypto policy to DEFAULT (was {prev})",
+            undo=[["update-crypto-policies", "--set", prev]],
+        )]
+
+    ssl_conf = Path("/etc/ssl/openssl.cnf")
+    if ssl_conf.exists():
+        bkp = journal.backup_file(str(ssl_conf))
+        text = ssl_conf.read_text()
+        if "MinProtocol" in text:
+            import re
+            text = re.sub(r"MinProtocol\s*=\s*\S+", "MinProtocol = TLSv1.2", text)
+        else:
+            text = text.rstrip() + "\n\n[system_default_sect]\nMinProtocol = TLSv1.2\n"
+        ssl_conf.write_text(text)
+        return [RollbackEntry(
+            action="set openssl MinProtocol = TLSv1.2",
+            path=str(ssl_conf),
+            backup=bkp,
+        )]
+
+    return []
+
+
 register(Control(
     id="LSS-001",
     title="Ensure system-wide crypto policy is not legacy",
     section="kernel",
     check=_check_crypto_policy,
-    fix=None,
+    fix=_fix_crypto_policy,
 ))
 
 
@@ -57,12 +96,20 @@ def _check_ipv6_forwarding() -> CheckResult:
     return CheckResult("fail", f"net.ipv6.conf.all.forwarding={r2.stdout.strip()}")
 
 
+def _fix_ipv6_forwarding() -> list[RollbackEntry]:
+    from lss.lib.sysctl import set_sysctl, get_sysctl
+    # If IPv6 is disabled the check already passes — no-op.
+    if get_sysctl("net.ipv6.conf.all.disable_ipv6") == "1":
+        return []
+    return [set_sysctl("net.ipv6.conf.all.forwarding", "0")]
+
+
 register(Control(
     id="3.2.1",
     title="Ensure IPv6 forwarding is disabled",
     section="network",
     check=_check_ipv6_forwarding,
-    fix=None,
+    fix=_fix_ipv6_forwarding,
 ))
 
 
@@ -79,34 +126,87 @@ def _check_securetty() -> CheckResult:
     return CheckResult("warn", f"{len(lines)} consoles in securetty — review for excess")
 
 
+def _fix_securetty() -> list[RollbackEntry]:
+    """Trim /etc/securetty to the CIS-minimal set (console, tty1).
+
+    Only trims — never creates the file. If /etc/securetty does not exist,
+    PAM already controls access (check passes) so no-op.
+    """
+    p = Path("/etc/securetty")
+    if not p.exists():
+        return []
+    bkp = journal.backup_file(str(p))
+    p.write_text("console\ntty1\n")
+    return [RollbackEntry(
+        action="trimmed /etc/securetty to CIS-minimal (console, tty1)",
+        path=str(p),
+        backup=bkp,
+    )]
+
+
 register(Control(
     id="LSS-002",
     title="Ensure root login is restricted to system console",
     section="auth",
     check=_check_securetty,
-    fix=None,
+    fix=_fix_securetty,
 ))
 
 
 # ---- CIS 4.2.3: Ensure permissions on all logfiles are configured ----
 
-def _check_log_permissions() -> CheckResult:
+def _world_accessible_logs() -> list[str]:
+    """Return paths of files in /var/log (top level) with any world bits set."""
     import os, stat
-    issues = 0
-    for root, dirs, files in os.walk("/var/log"):
-        for f in files:
-            fp = os.path.join(root, f)
-            try:
-                st = os.stat(fp)
-                mode = stat.S_IMODE(st.st_mode)
-                if mode & 0o007:  # world-readable/writable/executable
-                    issues += 1
-            except (OSError, PermissionError):
-                continue
-        break  # Only top level
-    if issues == 0:
+    hits = []
+    try:
+        entries = os.listdir("/var/log")
+    except (OSError, PermissionError):
+        return hits
+    for name in entries:
+        fp = os.path.join("/var/log", name)
+        try:
+            st = os.stat(fp)
+        except (OSError, PermissionError):
+            continue
+        if not stat.S_ISREG(st.st_mode):
+            continue
+        if stat.S_IMODE(st.st_mode) & 0o007:
+            hits.append(fp)
+    return hits
+
+
+def _check_log_permissions() -> CheckResult:
+    hits = _world_accessible_logs()
+    if not hits:
         return CheckResult("pass")
-    return CheckResult("warn", f"{issues} log files in /var/log are world-accessible")
+    return CheckResult("warn", f"{len(hits)} log files in /var/log are world-accessible")
+
+
+def _fix_log_permissions() -> list[RollbackEntry]:
+    """Strip world bits from world-accessible files in /var/log top level.
+
+    Records each file's pre-change mode so rollback restores exactly, without
+    forcing a blanket 0640 on files that originally had stricter permissions.
+    """
+    import os, stat
+    entries: list[RollbackEntry] = []
+    for fp in _world_accessible_logs():
+        try:
+            st = os.stat(fp)
+        except (OSError, PermissionError):
+            continue
+        prev_mode = stat.S_IMODE(st.st_mode)
+        new_mode = prev_mode & ~0o007
+        try:
+            os.chmod(fp, new_mode)
+        except (OSError, PermissionError):
+            continue
+        entries.append(RollbackEntry(
+            action=f"stripped world bits from {fp} ({oct(prev_mode)} -> {oct(new_mode)})",
+            undo=[["chmod", oct(prev_mode)[2:].zfill(4), fp]],
+        ))
+    return entries
 
 
 register(Control(
@@ -114,7 +214,7 @@ register(Control(
     title="Ensure permissions on all logfiles are configured",
     section="logging",
     check=_check_log_permissions,
-    fix=None,
+    fix=_fix_log_permissions,
 ))
 
 
@@ -123,9 +223,22 @@ register(Control(
 def _check_listening_services() -> CheckResult:
     r = subprocess.run(["ss", "-H", "-tlnp"], capture_output=True, text=True)
     lines = [l for l in r.stdout.splitlines() if l.strip()]
-    if len(lines) <= 5:
-        return CheckResult("pass", f"{len(lines)} listening service(s)")
-    return CheckResult("warn", f"{len(lines)} listening services — review for necessity")
+    if not lines:
+        return CheckResult("pass", "no TCP services listening")
+    ports = set()
+    for line in lines:
+        cols = line.split()
+        if len(cols) >= 4:
+            addr = cols[3]
+            port = addr.rsplit(":", 1)[-1]
+            if port.isdigit():
+                ports.add(port)
+    sample = ",".join(sorted(ports, key=int)[:6])
+    more = "…" if len(ports) > 6 else ""
+    return CheckResult(
+        "warn",
+        f"{len(lines)} listening TCP service(s) on port(s) {sample}{more} — review with `ss -tlnp` and remove/mask any that aren't required",
+    )
 
 
 register(Control(
@@ -138,6 +251,37 @@ register(Control(
 
 
 # ---- CIS 6.2.16: Ensure no users have .bash_profile that sources untrusted paths ----
+
+_PATH_ASSIGN_RE = None  # lazy-compiled
+
+
+def _path_line_is_unsafe(line: str) -> bool:
+    """A PATH= assignment line is unsafe if it injects '.' or an empty component.
+
+    Empty component (PATH=:/usr/bin or PATH=/usr/bin:) silently means '.' to
+    most shells. We extract the assigned value, strip surrounding quotes and
+    a leading 'export ', then split on ':' and look for '.' / '' components.
+    Comment lines and prose containing 'PATH=' as a substring are ignored.
+    """
+    import re
+    global _PATH_ASSIGN_RE
+    if _PATH_ASSIGN_RE is None:
+        _PATH_ASSIGN_RE = re.compile(r"^\s*(?:export\s+)?PATH=([^\s#]+)")
+    stripped = line.lstrip()
+    if stripped.startswith("#"):
+        return False
+    m = _PATH_ASSIGN_RE.match(line)
+    if not m:
+        return False
+    val = m.group(1).strip()
+    if (val.startswith('"') and val.endswith('"')) or (val.startswith("'") and val.endswith("'")):
+        val = val[1:-1]
+    parts = val.split(":")
+    for p in parts:
+        if p == "." or p == "":
+            return True
+    return False
+
 
 def _check_dot_files_safe() -> CheckResult:
     passwd = Path("/etc/passwd")
@@ -156,16 +300,71 @@ def _check_dot_files_safe() -> CheckResult:
                 continue
             for dotfile in [".bash_profile", ".bashrc", ".profile"]:
                 fp = Path(home) / dotfile
-                if fp.exists():
-                    try:
-                        text = fp.read_text()
-                        if "PATH=" in text and (".:" in text or ": " in text):
-                            issues.append(f"{user}:{dotfile}")
-                    except PermissionError:
+                try:
+                    if not fp.exists():
                         continue
+                    text = fp.read_text()
+                except (PermissionError, OSError):
+                    continue
+                for ln in text.splitlines():
+                    if _path_line_is_unsafe(ln):
+                        issues.append(f"{user}:{dotfile}")
+                        break
     if not issues:
         return CheckResult("pass")
     return CheckResult("warn", f"dot files with potential PATH issues: {', '.join(issues[:3])}")
+
+
+def _fix_dot_files_safe() -> list[RollbackEntry]:
+    """Comment out unsafe PATH= lines in real users' shell dotfiles.
+
+    Matches the same heuristic as the check: a line containing `PATH=` with
+    either `.:` (current directory) or `: ` (empty component). The whole
+    offending line gets prefixed with `# [LSS-DISABLED]`, never deleted,
+    so the operator can review it and the file's overall content survives.
+    """
+    passwd = Path("/etc/passwd")
+    if not passwd.exists():
+        return []
+    entries: list[RollbackEntry] = []
+    for line in passwd.read_text().splitlines():
+        parts = line.split(":")
+        if len(parts) < 6:
+            continue
+        user, _x, uid_str = parts[0], parts[1], parts[2]
+        home = parts[5]
+        try:
+            uid = int(uid_str)
+        except ValueError:
+            continue
+        if uid < 1000 and user != "root":
+            continue
+        for dotfile in [".bash_profile", ".bashrc", ".profile"]:
+            fp = Path(home) / dotfile
+            if not fp.exists():
+                continue
+            try:
+                text = fp.read_text()
+            except PermissionError:
+                continue
+            lines = text.splitlines(keepends=True)
+            if not any(_path_line_is_unsafe(ln) for ln in lines):
+                continue
+            bkp = journal.backup_file(str(fp))
+            changed = False
+            for i, ln in enumerate(lines):
+                if _path_line_is_unsafe(ln):
+                    lines[i] = f"# [LSS-DISABLED] {ln}"
+                    changed = True
+            if not changed:
+                continue
+            fp.write_text("".join(lines))
+            entries.append(RollbackEntry(
+                action=f"commented unsafe PATH line(s) in {fp}",
+                path=str(fp),
+                backup=bkp,
+            ))
+    return entries
 
 
 register(Control(
@@ -173,7 +372,7 @@ register(Control(
     title="Ensure no users' dot files have unsafe PATH entries",
     section="users",
     check=_check_dot_files_safe,
-    fix=None,
+    fix=_fix_dot_files_safe,
 ))
 
 
@@ -219,19 +418,24 @@ register(Control(
 # ---- CIS 4.1.2: Ensure audit backlog limit is sufficient ----
 
 def _check_audit_backlog() -> CheckResult:
-    # Check GRUB cmdline for audit_backlog_limit
-    for cmdline_path in ["/proc/cmdline"]:
-        p = Path(cmdline_path)
-        if p.exists():
-            text = p.read_text()
-            if "audit_backlog_limit=" in text:
-                import re
-                m = re.search(r"audit_backlog_limit=(\d+)", text)
-                if m and int(m.group(1)) >= 8192:
-                    return CheckResult("pass")
-                elif m:
-                    return CheckResult("warn", f"audit_backlog_limit={m.group(1)}, recommended: ≥ 8192")
-    return CheckResult("warn", "audit_backlog_limit not set in boot params")
+    import re
+    p = Path("/proc/cmdline")
+    if p.exists():
+        text = p.read_text()
+        m = re.search(r"audit_backlog_limit=(\d+)", text)
+        if m and int(m.group(1)) >= 8192:
+            return CheckResult("pass")
+        if m:
+            return CheckResult(
+                "warn",
+                f"audit_backlog_limit={m.group(1)}, recommended: >= 8192. "
+                f"Edit GRUB_CMDLINE_LINUX in /etc/default/grub, then run update-grub and reboot.",
+            )
+    return CheckResult(
+        "warn",
+        "audit_backlog_limit not set in /proc/cmdline. Add audit_backlog_limit=8192 to "
+        "GRUB_CMDLINE_LINUX in /etc/default/grub, then run update-grub and reboot.",
+    )
 
 
 register(Control(
@@ -239,5 +443,143 @@ register(Control(
     title="Ensure audit backlog limit is sufficient",
     section="logging",
     check=_check_audit_backlog,
-    fix=None,  # Requires GRUB modification
+    fix=None,  # Intentionally manual: bad GRUB edits brick hosts; rollback can't reach a host that won't boot.
+))
+
+
+# ---- LSS-004: AppArmor service condition-skip on Live+persistence boots ----
+#
+# Debian's /usr/lib/systemd/system/apparmor.service ships with the condition
+# `ConditionPathExists=!/run/live/overlay/work`. On a normal install /run/live
+# does not exist and the condition is satisfied (service starts). On a Debian
+# Live boot (or Kali Live, which derives from it) the path exists and the
+# condition fails — the service is skipped, no profiles enforce, and no
+# AppArmor confinement applies even though the kernel module is loaded and
+# the profiles are present on disk.
+#
+# This still bites on Live boots with persistence enabled, where the customer
+# expects a "real" install experience. It's invisible to standard CIS scanners
+# because aa-status reports "module is loaded" and the kernel parameter is
+# correct — only checking the systemd ConditionResult exposes the gap.
+#
+# Detection pairs the Live+persistence indicator with ConditionResult=no on
+# apparmor.service. Remediation is a one-line systemd drop-in that wipes the
+# inherited condition.
+
+def _is_live_persistence() -> bool:
+    """True if booted from Debian/Kali Live media with a persistence overlay."""
+    cmdline = Path("/proc/cmdline")
+    if not cmdline.exists() or "boot=live" not in cmdline.read_text():
+        return False
+    persistence_dir = Path("/run/live/persistence")
+    if not persistence_dir.exists():
+        return False
+    try:
+        return any(persistence_dir.iterdir())
+    except (OSError, PermissionError):
+        return False
+
+
+def _apparmor_service_condition_skipped() -> bool:
+    """True if apparmor.service is loaded but skipped by a unit Condition.
+
+    Returns False if the service is not loaded at all (different problem,
+    handled by 1.6.1) or if the condition is satisfied (service runs).
+    """
+    r = subprocess.run(
+        ["systemctl", "show", "apparmor.service",
+         "--property=LoadState", "--property=ConditionResult"],
+        capture_output=True, text=True,
+    )
+    if r.returncode != 0:
+        return False
+    out = r.stdout
+    if "LoadState=loaded" not in out:
+        return False
+    return "ConditionResult=no" in out
+
+
+def _check_apparmor_live_condition() -> CheckResult:
+    if not _is_live_persistence():
+        return CheckResult("skip", "not a Debian/Kali Live + persistence system")
+    if not _apparmor_service_condition_skipped():
+        return CheckResult("pass", "apparmor.service condition is satisfied")
+    return CheckResult(
+        "fail",
+        "apparmor.service is condition-skipped on this Live+persistence host. "
+        "Debian's unit file has `ConditionPathExists=!/run/live/overlay/work` "
+        "which prevents the service from starting whenever the Live overlay is "
+        "in use — even with persistence configured. No profiles are enforcing "
+        "as a result. Remediate by writing a systemd drop-in that empties the "
+        "condition: `sudo install -d /etc/systemd/system/apparmor.service.d && "
+        "printf '[Unit]\\nConditionPathExists=\\n' | sudo tee "
+        "/etc/systemd/system/apparmor.service.d/override.conf >/dev/null && "
+        "sudo systemctl daemon-reload && sudo systemctl enable --now apparmor.service`.",
+    )
+
+
+register(Control(
+    id="LSS-004",
+    title="Ensure apparmor.service is not condition-skipped on Live+persistence boots",
+    section="kernel",
+    check=_check_apparmor_live_condition,
+    fix=None,  # Audit-only in v0.5; auto-fix planned for v0.5.1 after testing across Live distros.
+))
+
+
+# ---- LSS-005: Forensic-grade user execve auditing (beyond CIS 4.1.13) ----
+#
+# CIS 4.1.13 specifies a narrow execve audit rule that fires only on
+# privilege-transition execves (effective UID becomes 0 while real UID
+# differs) — covering sudo, su, pkexec, and setuid-root binaries. That
+# answers "what got root" but is silent on what a user runs as themselves
+# before, after, or alongside privilege use.
+#
+# Forensic responders typically want broader coverage: every execve performed
+# by a real user (auid >= 1000). LSS-005 detects whether any such rule is
+# active and surfaces a remediation if not.
+#
+# This is intentionally audit-only. The broader rule produces audit log
+# volume proportional to user shell activity — tens to hundreds of MB per
+# day on an interactive host — and should be enabled deliberately, with the
+# operator's audit log rotation policy reviewed first.
+
+_LSS005_RULES = [
+    "-a always,exit -F arch=b64 -S execve -F auid>=1000 -F auid!=4294967295 -k user-exec",
+    "-a always,exit -F arch=b32 -S execve -F auid>=1000 -F auid!=4294967295 -k user-exec",
+]
+
+
+def _check_forensic_execve() -> CheckResult:
+    """Pass when an active execve rule scoped to real users (auid>=1000) exists.
+
+    Operators using a different key than `user-exec` still satisfy the
+    requirement; the check looks for the syscall + auid filter combination,
+    not a specific key name.
+    """
+    r = subprocess.run(["auditctl", "-l"], capture_output=True, text=True)
+    if r.returncode != 0:
+        return CheckResult("warn", "auditctl unavailable — cannot inspect loaded rules")
+    for line in r.stdout.splitlines():
+        if "-S execve" in line and "auid>=1000" in line:
+            return CheckResult("pass", "broader user-execve audit rule active")
+    return CheckResult(
+        "fail",
+        "no broader user-execve audit rule active. CIS 4.1.13 captures only "
+        "privilege-transition execves (sudo/su/pkexec/setuid). For forensic "
+        "coverage of every command run as a real user, add to "
+        "/etc/audit/rules.d/: "
+        f"`{_LSS005_RULES[0]}` and `{_LSS005_RULES[1]}`, then `augenrules --load`. "
+        "Volume warning: this rule can produce hundreds of MB of audit logs "
+        "per day on an interactive host — review your audit log rotation "
+        "(/etc/audit/auditd.conf max_log_file, num_logs) before enabling."
+    )
+
+
+register(Control(
+    id="LSS-005",
+    title="Forensic-grade user execve auditing (beyond CIS 4.1.13)",
+    section="logging",
+    check=_check_forensic_execve,
+    fix=None,  # Audit-only by design — log-volume impact requires operator opt-in.
 ))

@@ -143,6 +143,29 @@ register(Control(
 ))
 
 
+def _fix_banner_perms(path_str: str) -> list[RollbackEntry]:
+    """Set ownership to root:root and mode to 0644 on a banner file.
+
+    Records the pre-change owner/mode so rollback can restore exactly.
+    No-ops if the file does not exist.
+    """
+    p = Path(path_str)
+    if not p.exists():
+        return []
+    st = p.stat()
+    prev_uid, prev_gid = st.st_uid, st.st_gid
+    prev_mode = stat.S_IMODE(st.st_mode)
+    os.chown(path_str, 0, 0)
+    os.chmod(path_str, 0o644)
+    return [RollbackEntry(
+        action=f"set {path_str} to root:root 0644",
+        undo=[
+            ["chown", f"{prev_uid}:{prev_gid}", path_str],
+            ["chmod", oct(prev_mode)[2:].zfill(4), path_str],
+        ],
+    )]
+
+
 # ---- CIS 1.7.4: Ensure permissions on /etc/motd are configured ----
 
 def _check_motd_perms() -> CheckResult:
@@ -162,7 +185,7 @@ register(Control(
     title="Ensure permissions on /etc/motd are configured",
     section="banners",
     check=_check_motd_perms,
-    fix=None,  # Covered by 1.7.1 fix
+    fix=lambda: _fix_banner_perms("/etc/motd"),
 ))
 
 
@@ -185,7 +208,7 @@ register(Control(
     title="Ensure permissions on /etc/issue are configured",
     section="banners",
     check=_check_issue_perms,
-    fix=None,  # Covered by 1.7.2 fix
+    fix=lambda: _fix_banner_perms("/etc/issue"),
 ))
 
 
@@ -208,5 +231,5 @@ register(Control(
     title="Ensure permissions on /etc/issue.net are configured",
     section="banners",
     check=_check_issue_net_perms,
-    fix=None,  # Covered by 1.7.3 fix
+    fix=lambda: _fix_banner_perms("/etc/issue.net"),
 ))

@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import os
+import shutil
 import stat
+import subprocess
 from pathlib import Path
 
 from lss.lib.registry import Control, CheckResult, RollbackEntry, register
@@ -188,6 +190,20 @@ register(Control(
 
 # ---- CIS 6.2.9: Ensure all users' home directories exist ----
 
+_NOLOGIN_SHELLS = ("/usr/sbin/nologin", "/sbin/nologin", "/bin/false", "/usr/bin/false")
+
+
+def _is_service_account(uid: int, user: str, home: str, shell: str) -> bool:
+    """Service accounts are intentionally home-less: skip them in home-dir checks."""
+    if uid < 1000 and user != "root":
+        return True
+    if shell in _NOLOGIN_SHELLS:
+        return True
+    if home == "/nonexistent" or home == "/dev/null" or not home:
+        return True
+    return False
+
+
 def _check_home_dirs_exist() -> CheckResult:
     passwd = Path("/etc/passwd")
     if not passwd.exists():
@@ -195,12 +211,13 @@ def _check_home_dirs_exist() -> CheckResult:
     missing = []
     for line in passwd.read_text().splitlines():
         parts = line.split(":")
-        if len(parts) >= 6:
-            user, uid, home = parts[0], parts[2], parts[5]
+        if len(parts) >= 7:
+            user, _x, uid_str, _g, _gec, home, shell = parts[:7]
             try:
-                if int(uid) < 1000 and user != "root":
-                    continue  # skip system accounts
+                uid = int(uid_str)
             except ValueError:
+                continue
+            if _is_service_account(uid, user, home, shell):
                 continue
             if home and not Path(home).exists():
                 missing.append(f"{user}({home})")
@@ -209,12 +226,58 @@ def _check_home_dirs_exist() -> CheckResult:
     return CheckResult("fail", f"missing home dirs: {', '.join(missing[:5])}")
 
 
+def _fix_home_dirs_exist() -> list[RollbackEntry]:
+    """Create missing home directories for real users (UID >= 1000).
+
+    Populates from /etc/skel when present, chown's to the user's uid:gid,
+    and chmod's to 0750. Records each created path so rollback removes it.
+    Service accounts (UID < 1000) are intentionally skipped.
+    """
+    passwd = Path("/etc/passwd")
+    if not passwd.exists():
+        return []
+    entries: list[RollbackEntry] = []
+    skel = Path("/etc/skel")
+    for line in passwd.read_text().splitlines():
+        parts = line.split(":")
+        if len(parts) < 7:
+            continue
+        user, _x, uid_str, gid_str, _g, home, shell = parts[:7]
+        try:
+            uid = int(uid_str); gid = int(gid_str)
+        except ValueError:
+            continue
+        if _is_service_account(uid, user, home, shell):
+            continue
+        p = Path(home)
+        if not home or p.exists():
+            continue
+        p.mkdir(parents=True, exist_ok=False)
+        if skel.is_dir():
+            for src in skel.iterdir():
+                dst = p / src.name
+                if src.is_dir():
+                    shutil.copytree(src, dst, symlinks=True)
+                else:
+                    shutil.copy2(src, dst, follow_symlinks=False)
+        for root, dirs, files in os.walk(str(p)):
+            os.chown(root, uid, gid)
+            for name in files + dirs:
+                os.chown(os.path.join(root, name), uid, gid, follow_symlinks=False)
+        os.chmod(str(p), 0o750)
+        entries.append(RollbackEntry(
+            action=f"created missing home dir {home} for {user}",
+            undo=[["rm", "-rf", "--", str(p)]],
+        ))
+    return entries
+
+
 register(Control(
     id="6.2.9",
     title="Ensure all users' home directories exist",
     section="users",
     check=_check_home_dirs_exist,
-    fix=None,  # mkhomedir_helper or manual
+    fix=_fix_home_dirs_exist,
 ))
 
 
@@ -245,12 +308,50 @@ def _check_home_ownership() -> CheckResult:
     return CheckResult("fail", "; ".join(issues[:3]))
 
 
+def _fix_home_ownership() -> list[RollbackEntry]:
+    """Fix ownership of real users' home directories (top level only).
+
+    Recursive chown of a home dir could churn through millions of files and
+    mask attacks; CIS only requires the home dir itself to be owned by its
+    user. This fix chowns the top-level dir and records the previous uid:gid
+    for exact rollback.
+    """
+    passwd = Path("/etc/passwd")
+    if not passwd.exists():
+        return []
+    entries: list[RollbackEntry] = []
+    for line in passwd.read_text().splitlines():
+        parts = line.split(":")
+        if len(parts) < 7:
+            continue
+        user, _x, uid_str, gid_str, _g, home, _shell = parts[:7]
+        try:
+            uid = int(uid_str); gid = int(gid_str)
+        except ValueError:
+            continue
+        if uid < 1000 and user != "root":
+            continue
+        p = Path(home)
+        if not p.exists():
+            continue
+        st = p.stat()
+        if st.st_uid == uid:
+            continue
+        prev_uid, prev_gid = st.st_uid, st.st_gid
+        os.chown(str(p), uid, gid)
+        entries.append(RollbackEntry(
+            action=f"chown {home} -> {uid}:{gid} (was {prev_uid}:{prev_gid})",
+            undo=[["chown", f"{prev_uid}:{prev_gid}", str(p)]],
+        ))
+    return entries
+
+
 register(Control(
     id="6.2.10",
     title="Ensure users own their home directories",
     section="users",
     check=_check_home_ownership,
-    fix=None,
+    fix=_fix_home_ownership,
 ))
 
 
@@ -281,12 +382,47 @@ def _check_home_perms() -> CheckResult:
     return CheckResult("warn", "; ".join(issues[:3]))
 
 
+def _fix_home_perms() -> list[RollbackEntry]:
+    """Tighten real users' home dir modes to 0750 (top-level only).
+
+    Records each original mode so rollback restores exactly.
+    """
+    passwd = Path("/etc/passwd")
+    if not passwd.exists():
+        return []
+    entries: list[RollbackEntry] = []
+    for line in passwd.read_text().splitlines():
+        parts = line.split(":")
+        if len(parts) < 7:
+            continue
+        user, _x, uid_str, _gid, _g, home, _shell = parts[:7]
+        try:
+            uid = int(uid_str)
+        except ValueError:
+            continue
+        if uid < 1000 and user != "root":
+            continue
+        p = Path(home)
+        if not p.exists():
+            continue
+        mode = stat.S_IMODE(p.stat().st_mode)
+        if not (mode & 0o027):
+            continue
+        new_mode = mode & ~0o027
+        os.chmod(str(p), new_mode)
+        entries.append(RollbackEntry(
+            action=f"chmod {home} {oct(mode)} -> {oct(new_mode)}",
+            undo=[["chmod", oct(mode)[2:].zfill(4), str(p)]],
+        ))
+    return entries
+
+
 register(Control(
     id="6.2.11",
     title="Ensure users' home directory permissions are 750 or more restrictive",
     section="users",
     check=_check_home_perms,
-    fix=None,  # Too risky to auto-chmod home dirs
+    fix=_fix_home_perms,
 ))
 
 
@@ -309,12 +445,44 @@ def _check_dot_forward() -> CheckResult:
     return CheckResult("fail", f"users with .forward: {', '.join(found[:5])}")
 
 
+def _disable_user_dotfile(basename: str) -> list[RollbackEntry]:
+    """Rename every user's `~/<basename>` to `<basename>.lss-disabled`.
+
+    Rename (not delete) so the operator can inspect and rollback. Records an
+    exact undo for each file moved.
+    """
+    passwd = Path("/etc/passwd")
+    if not passwd.exists():
+        return []
+    entries: list[RollbackEntry] = []
+    for line in passwd.read_text().splitlines():
+        parts = line.split(":")
+        if len(parts) < 7:
+            continue
+        user, _x, _u, _g, _gec, home, _shell = parts[:7]
+        src = Path(home) / basename
+        if not src.exists():
+            continue
+        dst = Path(home) / f"{basename}.lss-disabled"
+        # Avoid clobbering if a prior run already disabled it
+        i = 1
+        while dst.exists():
+            dst = Path(home) / f"{basename}.lss-disabled.{i}"
+            i += 1
+        src.rename(dst)
+        entries.append(RollbackEntry(
+            action=f"renamed {src} -> {dst.name} for user {user}",
+            undo=[["mv", "--", str(dst), str(src)]],
+        ))
+    return entries
+
+
 register(Control(
     id="6.2.12",
     title="Ensure no users have .forward files",
     section="users",
     check=_check_dot_forward,
-    fix=None,
+    fix=lambda: _disable_user_dotfile(".forward"),
 ))
 
 
@@ -342,7 +510,7 @@ register(Control(
     title="Ensure no users have .netrc files",
     section="users",
     check=_check_dot_netrc,
-    fix=None,
+    fix=lambda: _disable_user_dotfile(".netrc"),
 ))
 
 
@@ -370,7 +538,7 @@ register(Control(
     title="Ensure no users have .rhosts files",
     section="users",
     check=_check_dot_rhosts,
-    fix=None,
+    fix=lambda: _disable_user_dotfile(".rhosts"),
 ))
 
 
@@ -462,10 +630,33 @@ def _check_root_default_group() -> CheckResult:
     return CheckResult("fail", "root not found in /etc/passwd")
 
 
+def _fix_root_default_group() -> list[RollbackEntry]:
+    """Set root's default group to GID 0 via usermod."""
+    passwd = Path("/etc/passwd")
+    if not passwd.exists():
+        return []
+    prev_gid = None
+    for line in passwd.read_text().splitlines():
+        parts = line.split(":")
+        if parts and parts[0] == "root" and len(parts) >= 4:
+            prev_gid = parts[3]
+            break
+    if prev_gid == "0":
+        return []
+    r = subprocess.run(["usermod", "-g", "0", "root"], capture_output=True, text=True)
+    if r.returncode != 0:
+        raise RuntimeError(f"usermod failed: {r.stderr.strip()}")
+    undo = [["usermod", "-g", prev_gid, "root"]] if prev_gid else []
+    return [RollbackEntry(
+        action=f"set root default GID 0 (was {prev_gid})",
+        undo=undo,
+    )]
+
+
 register(Control(
     id="5.4.3",
     title="Ensure default group for the root account is GID 0",
     section="auth",
     check=_check_root_default_group,
-    fix=None,
+    fix=_fix_root_default_group,
 ))

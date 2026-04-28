@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import subprocess
 from pathlib import Path
 
@@ -94,12 +95,24 @@ def _check_ssh_alive_not_zero() -> CheckResult:
     return CheckResult("fail", "ClientAliveInterval=0 (no timeout)")
 
 
+def _fix_ssh_alive_not_zero() -> list[RollbackEntry]:
+    """If ClientAliveInterval is 0 or unset, restore the CIS-recommended 300s."""
+    val = _get_sshd_setting("clientaliveinterval")
+    if val is not None:
+        try:
+            if int(val) > 0:
+                return []
+        except ValueError:
+            pass
+    return [_set_sshd_setting("ClientAliveInterval", "300")]
+
+
 register(Control(
     id="5.2.12",
     title="Ensure SSH idle timeout is not disabled",
     section="ssh",
     check=_check_ssh_alive_not_zero,
-    fix=None,  # Covered by 5.2.16
+    fix=_fix_ssh_alive_not_zero,
 ))
 
 
@@ -217,7 +230,7 @@ register(Control(
     title="Ensure AIDE is installed",
     section="filesystem",
     check=_check_aide_installed,
-    fix=None,
+    fix=lambda: _pkg_lib.install("aide"),
 ))
 
 
@@ -236,12 +249,41 @@ def _check_aide_cron() -> CheckResult:
     return CheckResult("warn", "no periodic AIDE check scheduled")
 
 
+_AIDE_CRON_DAILY = """#!/bin/sh
+# Installed by LSS to satisfy CIS 1.3.2 — periodic filesystem integrity check.
+if command -v aide >/dev/null 2>&1; then
+    /usr/bin/aide --check --config=/etc/aide/aide.conf | /usr/bin/logger -t aide
+fi
+"""
+
+
+def _fix_aide_cron() -> list[RollbackEntry]:
+    """Install /etc/cron.daily/aide so cron runs `aide --check` once per day.
+
+    No-op if AIDE is not installed (pkg.install AIDE via control 1.3.1 first,
+    or expect this fix to be a no-op that leaves the check still warning).
+    """
+    r = subprocess.run(["which", "aide"], capture_output=True, text=True)
+    if r.returncode != 0:
+        return []
+    p = Path("/etc/cron.daily/aide")
+    bkp = journal.backup_file(str(p))
+    p.write_text(_AIDE_CRON_DAILY)
+    os.chmod(str(p), 0o755)
+    return [RollbackEntry(
+        action="installed /etc/cron.daily/aide for periodic integrity check",
+        path=str(p),
+        backup=bkp,
+        undo=[] if bkp else [["rm", "-f", str(p)]],
+    )]
+
+
 register(Control(
     id="1.3.2",
     title="Ensure filesystem integrity is regularly checked",
     section="filesystem",
     check=_check_aide_cron,
-    fix=None,
+    fix=_fix_aide_cron,
 ))
 
 
@@ -257,12 +299,18 @@ def _check_apparmor_installed() -> CheckResult:
     return CheckResult("warn", "AppArmor not installed")
 
 
+def _fix_apparmor_installed() -> list[RollbackEntry]:
+    entries = _pkg_lib.install("apparmor")
+    entries.extend(_pkg_lib.install("apparmor-utils"))
+    return entries
+
+
 register(Control(
     id="1.6.1",
     title="Ensure AppArmor is installed",
     section="kernel",
     check=_check_apparmor_installed,
-    fix=None,
+    fix=_fix_apparmor_installed,
 ))
 
 
@@ -272,12 +320,16 @@ def _check_apparmor_enabled() -> CheckResult:
     r = subprocess.run(["aa-status", "--enabled"], capture_output=True, text=True)
     if r.returncode == 0:
         return CheckResult("pass")
-    # Check if loaded
     r2 = subprocess.run(["cat", "/sys/module/apparmor/parameters/enabled"],
                         capture_output=True, text=True)
     if r2.stdout.strip() == "Y":
         return CheckResult("pass")
-    return CheckResult("warn", "AppArmor not enabled")
+    return CheckResult(
+        "warn",
+        "AppArmor not enabled in the running kernel. Add `apparmor=1 security=apparmor` to "
+        "GRUB_CMDLINE_LINUX in /etc/default/grub, run update-grub and reboot. LSS does not "
+        "auto-edit GRUB because a bad kernel param can leave the host unbootable.",
+    )
 
 
 register(Control(
@@ -295,16 +347,22 @@ def _check_apparmor_profiles() -> CheckResult:
     try:
         r = subprocess.run(["aa-status"], capture_output=True, text=True)
         if r.returncode != 0:
-            return CheckResult("warn", "aa-status failed")
+            return CheckResult("warn", "aa-status failed — is AppArmor enabled?")
         if "0 processes are unconfined" in r.stdout:
             return CheckResult("pass")
-        # Parse
         for line in r.stdout.splitlines():
             if "unconfined" in line.lower():
-                return CheckResult("warn", line.strip())
+                return CheckResult(
+                    "warn",
+                    f"{line.strip()} — review each with `aa-status` and run `aa-enforce "
+                    "/etc/apparmor.d/<profile>` after confirming the profile won't break the app.",
+                )
         return CheckResult("pass")
     except FileNotFoundError:
-        return CheckResult("warn", "aa-status not found")
+        return CheckResult(
+            "warn",
+            "aa-status not found — install apparmor-utils (control 1.6.1) before running this check.",
+        )
 
 
 register(Control(
@@ -381,8 +439,11 @@ def _check_updates() -> CheckResult:
         upgradable = [l for l in r.stdout.splitlines() if "/" in l and "Listing..." not in l]
         if len(upgradable) == 0:
             return CheckResult("pass")
-        return CheckResult("warn", f"{len(upgradable)} package(s) have available updates")
-    return CheckResult("warn", "could not check for updates")
+        return CheckResult(
+            "warn",
+            f"{len(upgradable)} package(s) have available updates — run `apt-get update && apt-get upgrade -y` after reviewing the changelogs",
+        )
+    return CheckResult("warn", "could not check for updates — ensure apt or dnf is available and sources configured")
 
 
 register(Control(
@@ -413,6 +474,9 @@ def _pkg_installed(name: str) -> bool:
     return r2.returncode == 0
 
 
+from lss.lib import pkg as _pkg_lib
+
+
 for _id, _title, _pkg in _LEGACY_CLIENTS:
     pkg = _pkg
 
@@ -423,10 +487,15 @@ for _id, _title, _pkg in _LEGACY_CLIENTS:
             return CheckResult("pass", "not installed")
         return check
 
+    def _make_fix(p):
+        def fix():
+            return _pkg_lib.remove(p)
+        return fix
+
     register(Control(
         id=_id,
         title=_title,
         section="services",
         check=_make_check(pkg),
-        fix=None,  # Package removal requires confirmation
+        fix=_make_fix(pkg),
     ))

@@ -45,6 +45,11 @@ def build_parser() -> argparse.ArgumentParser:
         action="append",
         help="harden only specific control(s)",
     )
+    harden.add_argument(
+        "-i", "--interactive",
+        action="store_true",
+        help="prompt y/N before applying each fix (default: apply all without prompting)",
+    )
 
     # --- rollback ---
     rollback = sub.add_parser("rollback", help="undo previous hardening changes")
@@ -59,6 +64,11 @@ def build_parser() -> argparse.ArgumentParser:
         "-o", "--output",
         metavar="PATH",
         help="output path for the report (default: /var/log/lss/report-<timestamp>.html)",
+    )
+    report.add_argument(
+        "--baseline",
+        metavar="PATH",
+        help="path to a previous audit JSON; report renders a before/after delta against it",
     )
 
     # --- list ---
@@ -109,6 +119,11 @@ def _print_help_all():
     Options:
       --control ID    Only fix specific control(s).  Lets you pick and choose.
                       Example: --control 5.2.3 --control 5.4.1.1
+      -i, --interactive
+                      Prompt y/N before each fix is applied. Use this on a
+                      live customer box where you want to review every
+                      change in context before it lands. Default is N
+                      (skip) so a held breath of stdin doesn't apply a fix.
 
 {BOLD}  lss rollback --last{RESET}
     What it does:   Undoes the most recent harden run. Every change is reversed
@@ -133,6 +148,11 @@ def _print_help_all():
 
     Options:
       -o PATH         Save the report to a specific file path.
+      --baseline PATH Render a before/after delta against a previous audit
+                      JSON (e.g. /var/log/lss/audit-<earlier-ts>.json).
+                      Adds Before/After/Change columns and a delta summary
+                      block showing how many controls were Fixed,
+                      Regressed, Still failing, or Unchanged.
 
 {BOLD}  lss list{RESET}
     What it does:   Shows all 204 controls with their ID, section, title,
