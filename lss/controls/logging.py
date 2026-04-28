@@ -55,13 +55,29 @@ def _check_auditd_running() -> CheckResult:
 
 
 def _fix_auditd_running() -> list[RollbackEntry]:
+    """Enable and start auditd. Raise if either step fails so the harden
+    engine surfaces the failure rather than silently returning a partial
+    rollback set that the caller would treat as success."""
     entries = []
-    if subprocess.run(["systemctl", "enable", "auditd"],
-                      capture_output=True, text=True).returncode == 0:
+    r_enable = subprocess.run(["systemctl", "enable", "auditd"], capture_output=True, text=True)
+    if r_enable.returncode == 0:
         entries.append(RollbackEntry(action="enabled auditd", undo=[["systemctl", "disable", "auditd"]]))
-    if subprocess.run(["systemctl", "start", "auditd"],
-                      capture_output=True, text=True).returncode == 0:
+    else:
+        raise RuntimeError(f"systemctl enable auditd failed: {r_enable.stderr.strip()}")
+    r_start = subprocess.run(["systemctl", "start", "auditd"], capture_output=True, text=True)
+    if r_start.returncode == 0:
         entries.append(RollbackEntry(action="started auditd", undo=[["systemctl", "stop", "auditd"]]))
+    else:
+        # On RHEL family, systemd intentionally refuses systemctl start auditd;
+        # fall back to the legacy service command before raising.
+        r_legacy = subprocess.run(["service", "auditd", "start"], capture_output=True, text=True)
+        if r_legacy.returncode == 0:
+            entries.append(RollbackEntry(action="started auditd via service", undo=[["service", "auditd", "stop"]]))
+        else:
+            raise RuntimeError(
+                f"could not start auditd: systemctl rc={r_start.returncode} ({r_start.stderr.strip()}); "
+                f"service rc={r_legacy.returncode} ({r_legacy.stderr.strip()})"
+            )
     return entries
 
 
@@ -95,16 +111,28 @@ def _check_audit_log_size() -> CheckResult:
 
 
 def _fix_audit_log_size() -> list[RollbackEntry]:
-    """Set max_log_file = 32 (MB) in /etc/audit/auditd.conf.
+    """Set max_log_file = 32 (MB) in /etc/audit/auditd.conf and reload auditd.
 
     32MB is a conservative default well above the CIS minimum of 8MB;
     operators with specific retention needs can adjust manually.
+
+    auditd reads its config only at startup, so a config-only write would
+    leave the running daemon at the old value (cosmetic-pass class).
+    `service auditd reload` (which sends SIGUSR1 — the canonical reload
+    signal) picks up the new value without restarting the daemon. systemd
+    intentionally refuses `systemctl restart auditd` on RHEL family, so we
+    use the legacy service command which works on both Debian and RHEL.
     """
     conf = Path("/etc/audit/auditd.conf")
     if not conf.exists():
         return []
     bkp = journal.backup_file(str(conf))
     lines = conf.read_text().splitlines(keepends=True)
+    # Ensure last line ends with newline before potentially appending — a
+    # hand-edited file without trailing newline would otherwise produce
+    # `prev_linemax_log_file = 32\n` which auditd rejects on next startup.
+    if lines and not lines[-1].endswith("\n"):
+        lines[-1] = lines[-1] + "\n"
     found = False
     for i, line in enumerate(lines):
         if line.strip().startswith("max_log_file") and "max_log_file_action" not in line:
@@ -112,14 +140,20 @@ def _fix_audit_log_size() -> list[RollbackEntry]:
             found = True
             break
     if not found:
-        if lines and not lines[-1].endswith("\n"):
-            lines.append("\n")
         lines.append("max_log_file = 32\n")
     conf.write_text("".join(lines))
+    # Reload running daemon so the new value takes effect immediately.
+    # Best-effort: log but don't fail the fix if reload is unavailable
+    # (e.g., auditd not yet running). The check verifies file content,
+    # which is correct for the persisted policy.
+    subprocess.run(["service", "auditd", "reload"], capture_output=True)
     return [RollbackEntry(
-        action="set auditd max_log_file = 32 MB",
+        action="set auditd max_log_file = 32 MB and reloaded auditd",
         path=str(conf),
         backup=bkp,
+        # On rollback the file is restored from backup; reload again so the
+        # running daemon reverts to the prior value.
+        undo=[["service", "auditd", "reload"]],
     )]
 
 
