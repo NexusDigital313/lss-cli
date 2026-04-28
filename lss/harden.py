@@ -2,11 +2,38 @@
 
 from __future__ import annotations
 
+import json
+import os
 import sys
+from pathlib import Path
 
 from lss.lib import distro, journal, syslog
 from lss.lib.output import info, header, err, warn, print_result, print_summary, DIM, RESET, GREEN, YELLOW
 from lss.lib.registry import get_controls, CheckResult, RollbackEntry
+
+
+def _save_partial_journal(run_id: str, journal_entries: dict) -> None:
+    """Write whatever rollback entries we have on abort/interrupt.
+
+    Tries the normal journal path first. If that raises (disk full,
+    permission denied, missing parent dir), falls back to an emergency
+    dump under /tmp/ so the operator can recover the rollback record
+    rather than losing it silently.
+    """
+    if not journal_entries:
+        return
+    try:
+        jpath = journal.write_run(run_id, journal_entries)
+        info(f"Partial run journaled at: {jpath}")
+    except Exception as exc:
+        fallback = Path(f"/tmp/lss-emergency-journal-{os.getpid()}-{run_id}.json")
+        try:
+            fallback.write_text(json.dumps(journal_entries, default=str, indent=2))
+            err(f"Failed to write journal ({exc}). Emergency dump at {fallback}. "
+                f"Manual rollback will require this file.")
+        except Exception as exc2:
+            err(f"Failed to write journal AND emergency dump: {exc2}. "
+                f"Applied changes have NO rollback record.")
 
 # Controls in this list disable services that a customer may be actively using
 # in production (mail server, web server, etc.). When the operator runs
@@ -57,14 +84,17 @@ def run_harden(args) -> int:
     interactive = bool(getattr(args, "interactive", False))
 
     if interactive and dry_run:
-        # --interactive only makes sense with --confirm. Treat the combination
-        # as a no-op interactive: we'll show the per-control plan and ask, but
-        # we won't actually apply. Simpler to just disable interactive in
-        # dry-run mode since dry-run already shows the plan without prompts.
-        interactive = False
+        # --interactive and --dry-run mean different things; refuse rather
+        # than silently disabling one. The operator should choose: --dry-run
+        # to preview the plan, or --interactive to approve each fix as it
+        # would actually run.
+        err("--interactive and --dry-run are mutually exclusive. "
+            "Use --dry-run to preview the plan, or --interactive to approve "
+            "fixes one by one as they apply.")
+        return 2
 
-    if interactive and not sys.stdin.isatty():
-        err("--interactive requires a TTY on stdin (for the y/N prompt). "
+    if interactive and not (sys.stdin.isatty() and sys.stdout.isatty()):
+        err("--interactive requires a TTY on both stdin and stdout. "
             "Either run lss harden in a terminal, or drop --interactive.")
         return 1
 
@@ -145,14 +175,21 @@ def run_harden(args) -> int:
             try:
                 response = input("    Apply fix? [y/N] ").strip().lower()
             except EOFError:
-                response = ""
+                # stdin closed mid-prompt — treat as abort, not silent decline.
+                # If we kept going, every subsequent prompt would also EOFError
+                # and the run would silently "decline" all remaining controls
+                # with exit 0, which is exactly the silent-non-enforcement
+                # class we're trying to prevent.
+                print()
+                err("stdin closed mid-prompt — aborting interactive run. "
+                    "No further controls will be processed.")
+                _save_partial_journal(run_id, journal_entries)
+                journal.set_current_run_id(None)
+                return 1
             except KeyboardInterrupt:
                 print()
                 err("Aborted by operator (Ctrl-C). No further controls will be processed.")
-                # Write whatever journal we have so partial state is recoverable.
-                if journal_entries:
-                    jpath = journal.write_run(run_id, journal_entries)
-                    info(f"Partial run journaled at: {jpath}")
+                _save_partial_journal(run_id, journal_entries)
                 journal.set_current_run_id(None)
                 return 130  # 128 + SIGINT
             if response not in ("y", "yes"):

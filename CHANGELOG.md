@@ -41,6 +41,9 @@ All notable changes to The Linux Security Suite are documented here. The format 
 - **Big-hammer actions (1.9 apt upgrade, 1.4.4 root password):** interactive or too disruptive for an unattended pass.
 - **PAM stack edits (5.3.3 password reuse limit):** correctly editing the PAM password stack across Debian (pam-auth-update profile mechanism), RHEL/Fedora (authselect), and bare Linux (direct edit with `pam_unix` success-jump arithmetic) is its own subsystem of work. Earlier LSS versions wrote `remember=5` to `/etc/security/pwquality.conf`, which `pam_pwquality.so` does not actually process — the policy was never enforced. Rather than ship another half-correct fix that could lock customers out of their own auth, 5.3.3 is documented audit-only with a precise remediation command in the detail string. Full automated remediation is planned for v0.5.1.
 
+### Correctness fixes
+- **5.3.2 (faillock) check tightened.** Previous check returned `pass` if `/etc/security/faillock.conf` had a `deny` line, even when `pam_faillock.so` was not active in the PAM auth stack — the same cosmetic-pass class that hit 5.3.3. Check now requires an uncommented `pam_faillock` (or `pam_tally2`) line in `/etc/pam.d/common-auth` or `/etc/pam.d/system-auth` and includes a precise pam-auth-update / authselect remediation command in the fail detail. The fix continues to write `faillock.conf` so once `pam_faillock` is enabled, the policy is in place.
+
 All audit-only controls have specific detail strings telling the operator the exact command to run.
 
 ### Changed (existing checks)

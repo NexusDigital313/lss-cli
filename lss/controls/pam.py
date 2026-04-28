@@ -91,34 +91,55 @@ register(Control(
 
 
 # ---- CIS 5.3.2: Ensure lockout for failed password attempts is configured ----
+#
+# pam_faillock (or the legacy pam_tally2) is what enforces account lockout —
+# /etc/security/faillock.conf is only read when pam_faillock.so is loaded by
+# the PAM auth stack. Writing faillock.conf alone is a no-op if PAM doesn't
+# reference the module.
+#
+# The check below requires an UNCOMMENTED pam_faillock or pam_tally2 line in
+# the auth stack before passing. The fix continues to write faillock.conf so
+# the policy is applied on hosts where pam_faillock is configured, but the
+# check no longer pretends a stand-alone faillock.conf is sufficient.
+
+_FAILLOCK_REMEDIATION = (
+    "to enable: install pam_faillock in the PAM auth stack — on Debian/Ubuntu, "
+    "run `sudo pam-auth-update --enable faillock --package` (the libpam-runtime "
+    "ships a faillock pam-config profile); on RHEL/Fedora with authselect, "
+    "`sudo authselect enable-feature with-faillock`. Then re-run lss harden to "
+    "write the deny/unlock policy to /etc/security/faillock.conf."
+)
+
+
+def _faillock_module_active(pam_text: str) -> bool:
+    """True if any uncommented line in the PAM file references pam_faillock
+    or pam_tally2. Substring matching alone would also match commented-out
+    examples (Debian's libpam-runtime ships a commented `pam_faillock` line)."""
+    for line in pam_text.splitlines():
+        stripped = line.lstrip()
+        if stripped.startswith("#") or not stripped:
+            continue
+        if "pam_faillock" in stripped or "pam_tally2" in stripped:
+            return True
+    return False
+
 
 def _check_faillock() -> CheckResult:
-    # Check pam_faillock in PAM config
     for pam_path in ["/etc/pam.d/common-auth", "/etc/pam.d/system-auth"]:
         p = Path(pam_path)
-        if p.exists():
-            text = p.read_text()
-            if "pam_faillock" in text or "pam_tally2" in text:
-                return CheckResult("pass")
-
-    # Check faillock.conf
-    conf = Path("/etc/security/faillock.conf")
-    if conf.exists():
-        text = conf.read_text()
-        if "deny" in text:
-            return CheckResult("pass")
-
-    return CheckResult("fail", "pam_faillock not configured — no account lockout on failed attempts")
+        if p.exists() and _faillock_module_active(p.read_text()):
+            return CheckResult("pass", f"pam_faillock active in {pam_path}")
+    return CheckResult("fail", "pam_faillock not active in PAM auth stack — " + _FAILLOCK_REMEDIATION)
 
 
 def _fix_faillock() -> list[RollbackEntry]:
     """Write CIS-aligned lockout policy to /etc/security/faillock.conf.
 
-    Writes the config file only — does not edit PAM stack. On distros with
-    modern libpam-modules, pam_faillock reads this file when the preauth/
-    authfail/authsucc lines are present in the PAM stack. If PAM does not
-    yet reference pam_faillock, the check will still fail and the operator
-    will need to add the PAM lines manually (distro-specific).
+    Writes the config file only. The check requires pam_faillock to be active
+    in the PAM stack first; this fix complements that — once an operator
+    enables the faillock pam-config profile (or authselect feature), this
+    fix's previously-written /etc/security/faillock.conf provides the
+    deny/unlock policy that pam_faillock reads. Idempotent and rollback-safe.
     """
     conf = Path("/etc/security/faillock.conf")
     bkp = journal.backup_file(str(conf))

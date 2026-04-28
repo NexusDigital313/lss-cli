@@ -9,7 +9,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from lss import __version__
-from lss.lib.output import info, err, DIM, RESET
+from lss.lib.output import info, err, warn, DIM, RESET
 
 
 RESULTS_DIR = Path("/var/log/lss")
@@ -50,6 +50,24 @@ def run_report(args) -> int:
         except json.JSONDecodeError as exc:
             err(f"baseline file is not valid JSON: {exc}")
             return 1
+        # Schema check — older LSS versions may have used different shapes,
+        # and a corrupted JSON could parse but lack the expected keys.
+        if not isinstance(baseline_data, dict) or "controls" not in baseline_data:
+            err(f"baseline file has unrecognized schema (no 'controls' key): "
+                f"{baseline_path}. May be from an older LSS version; re-run "
+                f"audit on the prior state to regenerate, or use a newer baseline.")
+            return 1
+        if not isinstance(baseline_data.get("controls"), list):
+            err(f"baseline 'controls' field is not a list in {baseline_path}.")
+            return 1
+        # Cross-host warning — control IDs match between hosts but the
+        # comparison only makes sense on the same host. Surface a soft warning
+        # rather than block, since some compliance workflows compare
+        # equivalently-configured fleets intentionally.
+        base_host = baseline_data.get("host", {})
+        if isinstance(base_host, dict) and base_host.get("name") and base_host.get("name") != host.get("name"):
+            warn(f"baseline host '{base_host.get('name')}' differs from current host "
+                 f"'{host.get('name')}' — delta may compare unrelated configurations.")
 
     output_path = args.output or str(RESULTS_DIR / f"report-{ts}.html")
 
@@ -63,55 +81,85 @@ def run_report(args) -> int:
     return 0
 
 
+_KNOWN_STATUSES = {"pass", "fail", "warn", "skip"}
+
+
 def _compute_delta(baseline_controls: list[dict], latest_controls: list[dict]) -> dict:
     """Build a status-transition map keyed by control id.
 
     Returns a dict: id -> {'before': status, 'after': status, 'change': category}
-    where change is one of: 'fixed', 'regressed', 'still_failing', 'unchanged_pass',
-    'unchanged_warn', 'unchanged_skip', 'new', 'removed'.
+    where change is one of: 'fixed', 'improved', 'regressed', 'still_failing',
+    'unchanged_pass', 'unchanged_skip', 'new', 'removed', 'malformed', 'unknown'.
+
+    Distinguishes 'fixed' (X -> pass) from 'improved' (fail -> warn) so a
+    partial improvement isn't misreported to a compliance auditor as a full
+    pass. Unknown/missing status values are bucketed separately rather than
+    silently classified — a future status would otherwise vanish into the
+    'unchanged_<status>' fallback.
     """
-    base_by_id = {c["id"]: c for c in baseline_controls}
-    latest_by_id = {c["id"]: c for c in latest_controls}
+    base_by_id = {c.get("id"): c for c in baseline_controls if c.get("id")}
+    latest_by_id = {c.get("id"): c for c in latest_controls if c.get("id")}
 
     delta = {}
     all_ids = set(base_by_id) | set(latest_by_id)
     for cid in all_ids:
         b = base_by_id.get(cid)
         a = latest_by_id.get(cid)
-        if b and not a:
-            delta[cid] = {"before": b["status"], "after": None, "change": "removed"}
+
+        before = b.get("status") if b else None
+        after = a.get("status") if a else None
+
+        if before is not None and after is None:
+            delta[cid] = {"before": before, "after": None, "change": "removed"}
             continue
-        if a and not b:
-            delta[cid] = {"before": None, "after": a["status"], "change": "new"}
+        if after is not None and before is None:
+            delta[cid] = {"before": None, "after": after, "change": "new"}
             continue
-        before, after = b["status"], a["status"]
-        if before == after:
+        if before is None and after is None:
+            delta[cid] = {"before": None, "after": None, "change": "malformed"}
+            continue
+
+        if before not in _KNOWN_STATUSES or after not in _KNOWN_STATUSES:
+            change = "unknown"
+        elif before == after:
             change = f"unchanged_{after}"
-        elif before in ("fail", "warn") and after == "pass":
+        elif after == "pass":
             change = "fixed"
-        elif before == "pass" and after in ("fail", "warn"):
+        elif before == "pass":
             change = "regressed"
         elif before == "fail" and after == "warn":
-            change = "fixed"  # partial improvement counts as a fix
+            change = "improved"
         elif before == "warn" and after == "fail":
             change = "regressed"
+        elif before == "skip" or after == "skip":
+            change = "changed"
         else:
-            change = f"unchanged_{after}"
+            change = "changed"
+
         delta[cid] = {"before": before, "after": after, "change": change}
     return delta
 
 
 def _delta_summary(delta: dict) -> dict:
-    """Aggregate counts for the delta summary block."""
-    counts = {"fixed": 0, "regressed": 0, "still_failing": 0, "unchanged_pass": 0,
-              "unchanged_warn": 0, "unchanged_skip": 0, "new": 0, "removed": 0}
+    """Aggregate counts for the delta summary block.
+
+    `still_failing` folds in unchanged_fail and unchanged_warn (a control that
+    was failing and is still failing/warning is the actionable category for
+    the operator). unchanged_warn is intentionally NOT a separate top-level
+    count to avoid double-counting against still_failing.
+    """
+    counts = {
+        "fixed": 0, "improved": 0, "regressed": 0, "still_failing": 0,
+        "unchanged_pass": 0, "unchanged_skip": 0,
+        "new": 0, "removed": 0,
+        "changed": 0, "unknown": 0, "malformed": 0,
+    }
     for entry in delta.values():
         change = entry["change"]
-        # Normalize "still_failing" — anything that started fail/warn and stayed fail/warn.
         if change in ("unchanged_fail", "unchanged_warn"):
             counts["still_failing"] += 1
-            continue
-        counts[change] = counts.get(change, 0) + 1
+        else:
+            counts[change] = counts.get(change, 0) + 1
     return counts
 
 
@@ -126,10 +174,15 @@ def _delta_block_html(delta_summary: dict | None, baseline_data: dict | None) ->
     if not delta_summary or not baseline_data:
         return ""
     baseline_ts = baseline_data.get("timestamp", "unknown")
+    improved = delta_summary.get('improved', 0)
+    improved_block = (
+        f'  <div class="stat improved"><div class="n">{improved}</div>'
+        f'<div class="l">Improved</div></div>\n'
+    ) if improved else ""
     return f"""<div class="section-label">Change vs baseline ({_h(baseline_ts)})</div>
 <div class="delta-row">
   <div class="stat fixed"><div class="n">{delta_summary.get('fixed', 0)}</div><div class="l">Fixed</div></div>
-  <div class="stat regressed"><div class="n">{delta_summary.get('regressed', 0)}</div><div class="l">Regressed</div></div>
+{improved_block}  <div class="stat regressed"><div class="n">{delta_summary.get('regressed', 0)}</div><div class="l">Regressed</div></div>
   <div class="stat still"><div class="n">{delta_summary.get('still_failing', 0)}</div><div class="l">Still failing</div></div>
   <div class="stat unchanged"><div class="n">{delta_summary.get('unchanged_pass', 0)}</div><div class="l">Unchanged pass</div></div>
 </div>"""
@@ -145,13 +198,18 @@ def _change_pill(change: str) -> str:
     """Render the delta-change category as a styled pill."""
     label_map = {
         "fixed": ("Fixed", "fixed"),
+        "improved": ("Improved", "improved"),
         "regressed": ("Regressed", "regressed"),
         "still_failing": ("Still failing", "still"),
         "unchanged_pass": ("Unchanged", "still"),
-        "unchanged_warn": ("Unchanged", "still"),
+        "unchanged_warn": ("Still warning", "still"),
+        "unchanged_fail": ("Still failing", "still"),
         "unchanged_skip": ("N/A", "still"),
         "new": ("New", "new"),
         "removed": ("Removed", "still"),
+        "changed": ("Changed", "still"),
+        "unknown": ("Unknown", "still"),
+        "malformed": ("Malformed", "still"),
     }
     label, css = label_map.get(change, ("—", "still"))
     return f'<span class="pill change-{css}">{label}</span>'
@@ -258,6 +316,7 @@ def _render(ts: str, host: dict, summary: dict, controls: list[dict],
   .pill.skip {{ background: var(--surface); color: var(--ink2); }}
   .pill.new {{ background: #e7eefe; color: var(--blue); }}
   .pill.change-fixed {{ background: var(--pass-bg); color: var(--pass); }}
+  .pill.change-improved {{ background: var(--warn-bg); color: var(--warn); }}
   .pill.change-regressed {{ background: var(--fail-bg); color: var(--fail); }}
   .pill.change-still {{ background: var(--surface); color: var(--ink2); }}
   .pill.change-new {{ background: #e7eefe; color: var(--blue); }}
@@ -265,6 +324,7 @@ def _render(ts: str, host: dict, summary: dict, controls: list[dict],
     display: grid; grid-template-columns: repeat(4, 1fr); gap: 16px; margin-bottom: 24px;
   }}
   .delta-row .stat.fixed .n {{ color: var(--pass); }}
+  .delta-row .stat.improved .n {{ color: var(--warn); }}
   .delta-row .stat.regressed .n {{ color: var(--fail); }}
   .delta-row .stat.still .n {{ color: var(--warn); }}
   .delta-row .stat.unchanged .n {{ color: var(--ink2); }}

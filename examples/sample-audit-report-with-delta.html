@@ -66,6 +66,7 @@
   .pill.skip { background: var(--surface); color: var(--ink2); }
   .pill.new { background: #e7eefe; color: var(--blue); }
   .pill.change-fixed { background: var(--pass-bg); color: var(--pass); }
+  .pill.change-improved { background: var(--warn-bg); color: var(--warn); }
   .pill.change-regressed { background: var(--fail-bg); color: var(--fail); }
   .pill.change-still { background: var(--surface); color: var(--ink2); }
   .pill.change-new { background: #e7eefe; color: var(--blue); }
@@ -73,6 +74,7 @@
     display: grid; grid-template-columns: repeat(4, 1fr); gap: 16px; margin-bottom: 24px;
   }
   .delta-row .stat.fixed .n { color: var(--pass); }
+  .delta-row .stat.improved .n { color: var(--warn); }
   .delta-row .stat.regressed .n { color: var(--fail); }
   .delta-row .stat.still .n { color: var(--warn); }
   .delta-row .stat.unchanged .n { color: var(--ink2); }
@@ -109,14 +111,15 @@
 
 <div class="stat-row">
   <div class="stat ok"><div class="n">13</div><div class="l">Pass</div></div>
-  <div class="stat warn"><div class="n">0</div><div class="l">Warn</div></div>
+  <div class="stat warn"><div class="n">1</div><div class="l">Warn</div></div>
   <div class="stat bad"><div class="n">4</div><div class="l">Fail</div></div>
-  <div class="stat"><div class="n">76%</div><div class="l">Score</div></div>
+  <div class="stat"><div class="n">72%</div><div class="l">Score</div></div>
 </div>
 
 <div class="section-label">Change vs baseline (20260427T180000Z)</div>
 <div class="delta-row">
   <div class="stat fixed"><div class="n">10</div><div class="l">Fixed</div></div>
+  <div class="stat improved"><div class="n">1</div><div class="l">Improved</div></div>
   <div class="stat regressed"><div class="n">1</div><div class="l">Regressed</div></div>
   <div class="stat still"><div class="n">3</div><div class="l">Still failing</div></div>
   <div class="stat unchanged"><div class="n">3</div><div class="l">Unchanged pass</div></div>
@@ -133,7 +136,7 @@
         <td><span class="pill fail">FAIL</span></td>
         <td><span class="pill pass">PASS</span></td>
         <td><span class="pill change-fixed">Fixed</span></td>
-        <td class="detail">fixed by LSS harden</td>
+        <td class="detail"></td>
       </tr>
       <tr>
         <td>1.1.1.2</td>
@@ -141,7 +144,7 @@
         <td><span class="pill fail">FAIL</span></td>
         <td><span class="pill pass">PASS</span></td>
         <td><span class="pill change-fixed">Fixed</span></td>
-        <td class="detail">fixed by LSS harden</td>
+        <td class="detail"></td>
       </tr>
       <tr>
         <td>3.5.1.1</td>
@@ -149,7 +152,7 @@
         <td><span class="pill fail">FAIL</span></td>
         <td><span class="pill pass">PASS</span></td>
         <td><span class="pill change-fixed">Fixed</span></td>
-        <td class="detail">fixed by LSS harden</td>
+        <td class="detail"></td>
       </tr>
       <tr>
         <td>3.5.3.1</td>
@@ -157,7 +160,7 @@
         <td><span class="pill fail">FAIL</span></td>
         <td><span class="pill pass">PASS</span></td>
         <td><span class="pill change-fixed">Fixed</span></td>
-        <td class="detail">fixed by LSS harden</td>
+        <td class="detail"></td>
       </tr>
       <tr>
         <td>4.2.3</td>
@@ -165,7 +168,7 @@
         <td><span class="pill fail">FAIL</span></td>
         <td><span class="pill pass">PASS</span></td>
         <td><span class="pill change-fixed">Fixed</span></td>
-        <td class="detail">fixed by LSS harden</td>
+        <td class="detail"></td>
       </tr>
       <tr>
         <td>5.2.5</td>
@@ -173,7 +176,7 @@
         <td><span class="pill fail">FAIL</span></td>
         <td><span class="pill pass">PASS</span></td>
         <td><span class="pill change-fixed">Fixed</span></td>
-        <td class="detail">fixed by LSS harden</td>
+        <td class="detail"></td>
       </tr>
       <tr>
         <td>5.3.5</td>
@@ -181,15 +184,15 @@
         <td><span class="pill fail">FAIL</span></td>
         <td><span class="pill pass">PASS</span></td>
         <td><span class="pill change-fixed">Fixed</span></td>
-        <td class="detail">fixed by LSS harden</td>
+        <td class="detail"></td>
       </tr>
       <tr>
         <td>5.4.5</td>
-        <td>Ensure default user shell timeout is 900 seconds or less</td>
+        <td>Ensure default user shell timeout is 900s or less</td>
         <td><span class="pill warn">WARN</span></td>
         <td><span class="pill pass">PASS</span></td>
         <td><span class="pill change-fixed">Fixed</span></td>
-        <td class="detail">fixed by LSS harden</td>
+        <td class="detail"></td>
       </tr>
       <tr>
         <td>6.1.9</td>
@@ -197,7 +200,7 @@
         <td><span class="pill fail">FAIL</span></td>
         <td><span class="pill pass">PASS</span></td>
         <td><span class="pill change-fixed">Fixed</span></td>
-        <td class="detail">fixed by LSS harden</td>
+        <td class="detail"></td>
       </tr>
       <tr>
         <td>LSS-001</td>
@@ -205,31 +208,31 @@
         <td><span class="pill fail">FAIL</span></td>
         <td><span class="pill pass">PASS</span></td>
         <td><span class="pill change-fixed">Fixed</span></td>
-        <td class="detail">fixed by LSS harden</td>
+        <td class="detail"></td>
       </tr>
       <tr>
         <td>1.4.2</td>
         <td>Ensure bootloader password is set</td>
         <td><span class="pill fail">FAIL</span></td>
         <td><span class="pill fail">FAIL</span></td>
-        <td><span class="pill change-still">—</span></td>
-        <td class="detail">still fails</td>
+        <td><span class="pill change-still">Still failing</span></td>
+        <td class="detail"></td>
       </tr>
       <tr>
         <td>5.3.3</td>
         <td>Ensure password reuse is limited</td>
         <td><span class="pill fail">FAIL</span></td>
         <td><span class="pill fail">FAIL</span></td>
-        <td><span class="pill change-still">—</span></td>
-        <td class="detail">pam_pwhistory not in PAM password stack — to remediate run pam-auth-update --enable lss-pwhistory --package</td>
+        <td><span class="pill change-still">Still failing</span></td>
+        <td class="detail"></td>
       </tr>
       <tr>
         <td>LSS-005</td>
         <td>Forensic-grade user execve auditing</td>
         <td><span class="pill fail">FAIL</span></td>
         <td><span class="pill fail">FAIL</span></td>
-        <td><span class="pill change-still">—</span></td>
-        <td class="detail">still fails</td>
+        <td><span class="pill change-still">Still failing</span></td>
+        <td class="detail"></td>
       </tr>
       <tr>
         <td>2.1.1</td>
@@ -256,18 +259,26 @@
         <td class="detail"></td>
       </tr>
       <tr>
+        <td>5.3.2</td>
+        <td>Ensure lockout for failed password attempts is configured</td>
+        <td><span class="pill fail">FAIL</span></td>
+        <td><span class="pill warn">WARN</span></td>
+        <td><span class="pill change-improved">Improved</span></td>
+        <td class="detail"></td>
+      </tr>
+      <tr>
         <td>LSS-004</td>
         <td>AppArmor service condition-skip on Live+persistence</td>
         <td><span class="pill pass">PASS</span></td>
         <td><span class="pill fail">FAIL</span></td>
         <td><span class="pill change-regressed">Regressed</span></td>
-        <td class="detail">Debian&#x27;s apparmor.service has ConditionPathExists=!/run/live/overlay/work — install systemd drop-in</td>
+        <td class="detail"></td>
       </tr>
   </tbody>
 </table>
 
 <div class="footer">
-  Generated 2026-04-28 14:59:11 UTC by The Linux Security Suite &mdash; linuxsecuritysuite.com
+  Generated 2026-04-28 15:14:33 UTC by The Linux Security Suite &mdash; linuxsecuritysuite.com
 </div>
 
 </body>
