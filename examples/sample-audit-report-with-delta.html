@@ -1,0 +1,274 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>LSS Audit Report — Debian GNU/Linux 12 (bookworm)</title>
+<style>
+  :root {
+    --bg: #ffffff;
+    --ink: #1c2330;
+    --ink2: #5b6675;
+    --line: #e7ebf1;
+    --surface: #f2f5f9;
+    --pass: #0c8a5a;
+    --pass-bg: #dff7ec;
+    --warn: #8a6300;
+    --warn-bg: #fff1d6;
+    --fail: #b3263a;
+    --fail-bg: #fde2e6;
+    --blue: #2a5fcc;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    font-size: 14px; line-height: 1.5; color: var(--ink);
+    max-width: 960px; margin: 0 auto; padding: 40px 28px;
+  }
+  .header {
+    display: flex; justify-content: space-between; align-items: flex-start;
+    border-bottom: 3px solid var(--ink); padding-bottom: 20px; margin-bottom: 32px;
+  }
+  .header h1 { font-size: 22px; letter-spacing: -0.01em; }
+  .header .meta { text-align: right; font-size: 12px; color: var(--ink2);
+    font-family: 'Courier New', monospace; }
+  .stat-row {
+    display: grid; grid-template-columns: repeat(4, 1fr); gap: 16px; margin-bottom: 32px;
+  }
+  .stat {
+    text-align: center; padding: 16px 8px; border-radius: 8px; background: var(--surface);
+  }
+  .stat .n { font-size: 28px; font-weight: 700; }
+  .stat .l { font-size: 11px; text-transform: uppercase; letter-spacing: 0.08em;
+    color: var(--ink2); margin-top: 4px; }
+  .stat.ok .n { color: var(--pass); }
+  .stat.warn .n { color: var(--warn); }
+  .stat.bad .n { color: var(--fail); }
+  table {
+    width: 100%; border-collapse: collapse; font-size: 13px; margin-bottom: 32px;
+  }
+  th {
+    text-align: left; padding: 10px 10px; background: var(--surface);
+    font-size: 11px; text-transform: uppercase; letter-spacing: 0.08em;
+    color: var(--ink2); font-weight: 600; border-bottom: 2px solid var(--line);
+  }
+  td {
+    padding: 10px 10px; border-bottom: 1px solid var(--line);
+  }
+  td.detail { color: var(--ink2); font-family: 'Courier New', monospace; font-size: 12px; }
+  .pill {
+    display: inline-block; padding: 2px 10px; border-radius: 4px;
+    font-size: 11px; font-weight: 600; letter-spacing: 0.04em;
+  }
+  .pill.pass { background: var(--pass-bg); color: var(--pass); }
+  .pill.warn { background: var(--warn-bg); color: var(--warn); }
+  .pill.fail { background: var(--fail-bg); color: var(--fail); }
+  .pill.skip { background: var(--surface); color: var(--ink2); }
+  .pill.new { background: #e7eefe; color: var(--blue); }
+  .pill.change-fixed { background: var(--pass-bg); color: var(--pass); }
+  .pill.change-regressed { background: var(--fail-bg); color: var(--fail); }
+  .pill.change-still { background: var(--surface); color: var(--ink2); }
+  .pill.change-new { background: #e7eefe; color: var(--blue); }
+  .delta-row {
+    display: grid; grid-template-columns: repeat(4, 1fr); gap: 16px; margin-bottom: 24px;
+  }
+  .delta-row .stat.fixed .n { color: var(--pass); }
+  .delta-row .stat.regressed .n { color: var(--fail); }
+  .delta-row .stat.still .n { color: var(--warn); }
+  .delta-row .stat.unchanged .n { color: var(--ink2); }
+  .section-label {
+    font-size: 11px; text-transform: uppercase; letter-spacing: 0.08em;
+    color: var(--ink2); font-weight: 600; margin: 24px 0 8px 0;
+  }
+  .footer {
+    border-top: 1px solid var(--line); padding-top: 16px; margin-top: 40px;
+    font-size: 12px; color: var(--ink2);
+  }
+  @media print {
+    body { padding: 20px; }
+    .stat-row { break-inside: avoid; }
+    tr { break-inside: avoid; }
+  }
+</style>
+</head>
+<body>
+
+<div class="header">
+  <div>
+    <div style="font-size:12px;text-transform:uppercase;letter-spacing:0.1em;color:var(--ink2);margin-bottom:6px;font-weight:600">
+      Hardening Audit Report
+    </div>
+    <h1>Debian GNU/Linux 12 (bookworm)</h1>
+  </div>
+  <div class="meta">
+    20260428T120000Z<br/>
+    Linux Security Suite v0.5.0<br/>
+    Kernel: 6.1.0-21-amd64
+  </div>
+</div>
+
+<div class="stat-row">
+  <div class="stat ok"><div class="n">13</div><div class="l">Pass</div></div>
+  <div class="stat warn"><div class="n">0</div><div class="l">Warn</div></div>
+  <div class="stat bad"><div class="n">4</div><div class="l">Fail</div></div>
+  <div class="stat"><div class="n">76%</div><div class="l">Score</div></div>
+</div>
+
+<div class="section-label">Change vs baseline (20260427T180000Z)</div>
+<div class="delta-row">
+  <div class="stat fixed"><div class="n">10</div><div class="l">Fixed</div></div>
+  <div class="stat regressed"><div class="n">1</div><div class="l">Regressed</div></div>
+  <div class="stat still"><div class="n">3</div><div class="l">Still failing</div></div>
+  <div class="stat unchanged"><div class="n">3</div><div class="l">Unchanged pass</div></div>
+</div>
+
+<table>
+  <thead>
+    <tr><th>ID</th><th>Control</th><th>Before</th><th>After</th><th>Change</th><th>Detail</th></tr>
+  </thead>
+  <tbody>
+      <tr>
+        <td>1.1.1.1</td>
+        <td>Ensure mounting of cramfs is disabled</td>
+        <td><span class="pill fail">FAIL</span></td>
+        <td><span class="pill pass">PASS</span></td>
+        <td><span class="pill change-fixed">Fixed</span></td>
+        <td class="detail">fixed by LSS harden</td>
+      </tr>
+      <tr>
+        <td>1.1.1.2</td>
+        <td>Ensure mounting of freevxfs is disabled</td>
+        <td><span class="pill fail">FAIL</span></td>
+        <td><span class="pill pass">PASS</span></td>
+        <td><span class="pill change-fixed">Fixed</span></td>
+        <td class="detail">fixed by LSS harden</td>
+      </tr>
+      <tr>
+        <td>3.5.1.1</td>
+        <td>Ensure iptables-persistent installed</td>
+        <td><span class="pill fail">FAIL</span></td>
+        <td><span class="pill pass">PASS</span></td>
+        <td><span class="pill change-fixed">Fixed</span></td>
+        <td class="detail">fixed by LSS harden</td>
+      </tr>
+      <tr>
+        <td>3.5.3.1</td>
+        <td>Ensure ip6tables default deny firewall policy</td>
+        <td><span class="pill fail">FAIL</span></td>
+        <td><span class="pill pass">PASS</span></td>
+        <td><span class="pill change-fixed">Fixed</span></td>
+        <td class="detail">fixed by LSS harden</td>
+      </tr>
+      <tr>
+        <td>4.2.3</td>
+        <td>Ensure permissions on logfiles are configured</td>
+        <td><span class="pill fail">FAIL</span></td>
+        <td><span class="pill pass">PASS</span></td>
+        <td><span class="pill change-fixed">Fixed</span></td>
+        <td class="detail">fixed by LSS harden</td>
+      </tr>
+      <tr>
+        <td>5.2.5</td>
+        <td>Ensure SSH MaxAuthTries is set to 4 or less</td>
+        <td><span class="pill fail">FAIL</span></td>
+        <td><span class="pill pass">PASS</span></td>
+        <td><span class="pill change-fixed">Fixed</span></td>
+        <td class="detail">fixed by LSS harden</td>
+      </tr>
+      <tr>
+        <td>5.3.5</td>
+        <td>Ensure password hashing algorithm is SHA-512</td>
+        <td><span class="pill fail">FAIL</span></td>
+        <td><span class="pill pass">PASS</span></td>
+        <td><span class="pill change-fixed">Fixed</span></td>
+        <td class="detail">fixed by LSS harden</td>
+      </tr>
+      <tr>
+        <td>5.4.5</td>
+        <td>Ensure default user shell timeout is 900 seconds or less</td>
+        <td><span class="pill warn">WARN</span></td>
+        <td><span class="pill pass">PASS</span></td>
+        <td><span class="pill change-fixed">Fixed</span></td>
+        <td class="detail">fixed by LSS harden</td>
+      </tr>
+      <tr>
+        <td>6.1.9</td>
+        <td>Ensure no world-writable files exist</td>
+        <td><span class="pill fail">FAIL</span></td>
+        <td><span class="pill pass">PASS</span></td>
+        <td><span class="pill change-fixed">Fixed</span></td>
+        <td class="detail">fixed by LSS harden</td>
+      </tr>
+      <tr>
+        <td>LSS-001</td>
+        <td>Ensure system-wide crypto policy is not legacy</td>
+        <td><span class="pill fail">FAIL</span></td>
+        <td><span class="pill pass">PASS</span></td>
+        <td><span class="pill change-fixed">Fixed</span></td>
+        <td class="detail">fixed by LSS harden</td>
+      </tr>
+      <tr>
+        <td>1.4.2</td>
+        <td>Ensure bootloader password is set</td>
+        <td><span class="pill fail">FAIL</span></td>
+        <td><span class="pill fail">FAIL</span></td>
+        <td><span class="pill change-still">—</span></td>
+        <td class="detail">still fails</td>
+      </tr>
+      <tr>
+        <td>5.3.3</td>
+        <td>Ensure password reuse is limited</td>
+        <td><span class="pill fail">FAIL</span></td>
+        <td><span class="pill fail">FAIL</span></td>
+        <td><span class="pill change-still">—</span></td>
+        <td class="detail">pam_pwhistory not in PAM password stack — to remediate run pam-auth-update --enable lss-pwhistory --package</td>
+      </tr>
+      <tr>
+        <td>LSS-005</td>
+        <td>Forensic-grade user execve auditing</td>
+        <td><span class="pill fail">FAIL</span></td>
+        <td><span class="pill fail">FAIL</span></td>
+        <td><span class="pill change-still">—</span></td>
+        <td class="detail">still fails</td>
+      </tr>
+      <tr>
+        <td>2.1.1</td>
+        <td>Ensure time synchronization is in use</td>
+        <td><span class="pill pass">PASS</span></td>
+        <td><span class="pill pass">PASS</span></td>
+        <td><span class="pill change-still">Unchanged</span></td>
+        <td class="detail"></td>
+      </tr>
+      <tr>
+        <td>3.5.1.2</td>
+        <td>Ensure nftables is installed</td>
+        <td><span class="pill pass">PASS</span></td>
+        <td><span class="pill pass">PASS</span></td>
+        <td><span class="pill change-still">Unchanged</span></td>
+        <td class="detail"></td>
+      </tr>
+      <tr>
+        <td>4.1.13</td>
+        <td>Ensure system administrator command executions are collected</td>
+        <td><span class="pill pass">PASS</span></td>
+        <td><span class="pill pass">PASS</span></td>
+        <td><span class="pill change-still">Unchanged</span></td>
+        <td class="detail"></td>
+      </tr>
+      <tr>
+        <td>LSS-004</td>
+        <td>AppArmor service condition-skip on Live+persistence</td>
+        <td><span class="pill pass">PASS</span></td>
+        <td><span class="pill fail">FAIL</span></td>
+        <td><span class="pill change-regressed">Regressed</span></td>
+        <td class="detail">Debian&#x27;s apparmor.service has ConditionPathExists=!/run/live/overlay/work — install systemd drop-in</td>
+      </tr>
+  </tbody>
+</table>
+
+<div class="footer">
+  Generated 2026-04-28 14:59:11 UTC by The Linux Security Suite &mdash; linuxsecuritysuite.com
+</div>
+
+</body>
+</html>
