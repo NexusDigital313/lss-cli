@@ -7,7 +7,10 @@
 #     https://gumroad.com/l/PRO_SLUG \
 #     https://gumroad.com/l/ENT_SLUG
 #
-# Backs up the existing index.html as index.html.bak before modifying.
+# By default, looks for the landing page at the canonical post-reorg path:
+#   /home/kali/00-Active-Products/LSS/Landing-Page/lss-landing/index.html
+# Override with LSS_LANDING_PATH=<path> in the environment if your repo is
+# elsewhere. Backs up the existing index.html as index.html.bak before modifying.
 
 set -euo pipefail
 
@@ -20,10 +23,27 @@ SOLO_URL="$1"
 PRO_URL="$2"
 ENT_URL="$3"
 
-LANDING="/home/kali/lss-landing/index.html"
+# Find the landing page. Try the env override first, then the canonical
+# post-reorg path, then the legacy pre-reorg path. Fail loudly if none exist.
+_CANDIDATES=(
+    "${LSS_LANDING_PATH:-}"
+    "/home/kali/00-Active-Products/LSS/Landing-Page/lss-landing/index.html"
+    "/home/kali/lss-landing/index.html"
+)
+LANDING=""
+for c in "${_CANDIDATES[@]}"; do
+    if [ -n "$c" ] && [ -f "$c" ]; then
+        LANDING="$c"
+        break
+    fi
+done
 
-if [ ! -f "$LANDING" ]; then
-    echo "landing page not found at $LANDING" >&2
+if [ -z "$LANDING" ]; then
+    echo "landing page not found. Tried:" >&2
+    for c in "${_CANDIDATES[@]}"; do
+        [ -n "$c" ] && echo "  $c" >&2
+    done
+    echo "Set LSS_LANDING_PATH=<path/to/index.html> if it lives elsewhere." >&2
     exit 1
 fi
 

@@ -76,7 +76,7 @@ lss help-all
 
 ## Coverage
 
-**206 hardening controls** across 19 modules — 201 CIS-aligned plus 5 LSS-XXX detection controls for situations standard CIS scanners miss. The honest breakdown:
+**206 hardening controls** across 11 sections — 201 CIS-aligned plus 5 LSS-XXX detection controls for situations standard CIS scanners miss. The honest breakdown:
 
 | | Count | What it means |
 |---|---|---|
