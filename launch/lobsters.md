@@ -29,9 +29,9 @@ Three things I think are worth a Lobsters audience:
 
 2. CIS ID honesty. I caught myself mislabeling 6 custom controls as if they were CIS, and one off-by-one (5.4.1.5 doesn't exist in CIS Debian 12 v1.0.0; the inactive-lock control is 5.4.1.4). Fixed and renamed to LSS-001/002/003 namespace so anyone cross-referencing the official PDF doesn't get surprised.
 
-3. sshd Match block awareness. `sshd -T` resolves Match against the invoking user, so a control may pass for root and still be wrong for everyone else. There's a `setting_in_global_scope()` helper that reads the actual config files (including /etc/ssh/sshd_config.d/*) and warns when a value is correct but only via Match scope. Used in PermitRootLogin so far; planned for the rest in v0.3.x.
+3. sshd Match block awareness. `sshd -T` resolves Match against the invoking user, so a control may pass for root and still be wrong for everyone else. There's a `setting_in_global_scope()` helper that reads the actual config files (including /etc/ssh/sshd_config.d/*) and warns when a value is correct but only via Match scope. Used in PermitRootLogin so far; planned for the rest in v1.x.
 
-Commercial — $149/$499/$1,499. Source readable for evaluation. Honest tradeoffs in the README and the v0.3 changelog.
+Commercial — $149/$499/$1,499. Source readable for evaluation. Honest tradeoffs in the README and the v1.0 changelog.
 ```
 
 ## Notes

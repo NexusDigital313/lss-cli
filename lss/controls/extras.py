@@ -537,7 +537,7 @@ register(Control(
     title="Ensure apparmor.service is not condition-skipped on Live+persistence boots",
     section="kernel",
     check=_check_apparmor_live_condition,
-    fix=None,  # Audit-only in v0.5; auto-fix planned for a future release after testing across Live distros.
+    fix=None,  # Audit-only in v1.0; auto-fix planned for a future release after testing across Live distros.
 ))
 
 

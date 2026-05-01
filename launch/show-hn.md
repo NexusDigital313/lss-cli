@@ -21,7 +21,7 @@ I built this because every CIS hardening tool I tried fell into one of two camps
 
 The Linux Security Suite is one binary that:
 
-- audits 204 CIS Benchmark controls (Debian 12 Level 1 Server profile, RHEL coming) in about two minutes, read-only
+- audits 206 CIS Benchmark controls (Debian 12 Level 1 Server profile, RHEL coming) in about two minutes, read-only
 - applies the auto-fix for failures with one command, recording every change in a rollback journal
 - gives you a printable HTML report you can hand to a client or auditor
 - and `lss rollback --last` reverses everything in the opposite order it was applied — file-restore first, then runtime undo, all without shell=True
@@ -29,9 +29,9 @@ The Linux Security Suite is one binary that:
 Why I'm posting it: I just finished a substantial security pass on it. The earlier version had two real bugs that made me uncomfortable shipping — XSS in the HTML report (hostname interpolated raw) and shell injection in the rollback engine (undo commands stored as f-string shell strings). Both are fixed in v0.3.0. The undo storage is now `list[list[str]]` argv that runs with `shell=False`, the rollback engine refuses to execute legacy string undos, and there's a regression test that confirms a malicious `touch /tmp/sentinel` legacy undo is not executed.
 
 Honest tradeoffs:
-- 79 of the 204 controls are audit-only — I don't auto-fix things where the safe fix is site-specific (which UID 0 accounts to remove, what to do with world-writable files you might actually need world-writable).
+- 34 of the 206 controls are audit-only — I don't auto-fix things where the safe fix is site-specific (which UID 0 accounts to remove, what to do with world-writable files you might actually need world-writable).
 - It's commercial. $149 single host, $499 up to 25 hosts (Pro), $1,499 unlimited (Enterprise). Source is readable for evaluation. Free CIS scripts exist; this one is for ops teams who'd rather pay than maintain a homegrown one.
-- v1.0 ships when I have an attorney-drafted EULA and the per-control test suite is fleshed out. v0.3 is beta, sold with that disclaimer.
+- v1.0 is the current stable release with the per-control test suite landed (1023 tests). The LICENSE is a defensible self-drafted EULA; an attorney-drafted upgrade is planned before Enterprise sales scale up.
 
 Architecture in three sentences: a control registry of dataclass `Control(id, title, section, check, fix)`; fixes return `RollbackEntry` records that the harden engine writes to a journal under `/var/log/lss/journal/`; rollback replays the journal in reverse, restoring file backups via `shutil.copy2` and running argv-list undos with `shell=False`. The whole thing is ~5k lines of Python plus the rich library.
 
