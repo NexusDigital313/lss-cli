@@ -138,6 +138,9 @@ def print_result(control_id: str, title: str, status: str, detail: str = ""):
     elif status == "warn":
         sym = "[dark_orange]  ▲[/]"
         id_style = "dark_orange"
+    elif status == "manual":
+        sym = "[gold1]  ◐[/]"
+        id_style = "gold1"
     elif status == "skip":
         sym = "[grey50]  -[/]"
         id_style = "grey50"
@@ -178,31 +181,39 @@ def _score_bar(score: int, width: int = 50) -> Text:
 # ---------------------------------------------------------------------------
 # Summary
 # ---------------------------------------------------------------------------
-def print_summary(passes: int, warns: int, fails: int, skips: int = 0):
-    total = passes + warns + fails + skips
-    # Score is computed against applicable controls only — skips don't count
-    applicable = passes + warns + fails
-    score = round(passes / applicable * 100) if applicable else 0
+def print_summary(passes: int, warns: int, fails: int, skips: int = 0, manuals: int = 0):
+    total = passes + warns + fails + skips + manuals
+
+    # Two scores so the operator can see both sides:
+    #   Hardened — passes / (pass+warn+fail) — what LSS auto-hardened
+    #   Compliance — passes / (pass+warn+fail+manual) — full CIS posture
+    # Manuals deliberately don't count against the hardened score: they're
+    # controls LSS won't auto-fix by design (operator opt-in required), and
+    # punishing the score for that restraint creates the wrong incentive.
+    hardened_applicable = passes + warns + fails
+    compliance_applicable = passes + warns + fails + manuals
+    hardened_score = round(passes / hardened_applicable * 100) if hardened_applicable else 0
+    compliance_score = round(passes / compliance_applicable * 100) if compliance_applicable else 0
 
     console.print()
 
-    # Score
+    # Two score bars, labeled
     score_panel = Table.grid(padding=(0, 0))
+    score_panel.add_column(justify="right", style="grey70", min_width=12)
     score_panel.add_column()
-    score_panel.add_row(_score_bar(score, width=60))
+    score_panel.add_row("[bold]Hardened[/]  ", _score_bar(hardened_score, width=50))
+    score_panel.add_row("[bold]Compliance[/]  ", _score_bar(compliance_score, width=50))
 
-    # Stats
-    stats = Table.grid(padding=(0, 4))
-    stats.add_column(justify="center")
-    stats.add_column(justify="center")
-    stats.add_column(justify="center")
-    stats.add_column(justify="center")
-    stats.add_column(justify="center")
+    # Stats — six columns now (added manual)
+    stats = Table.grid(padding=(0, 3))
+    for _ in range(6):
+        stats.add_column(justify="center")
 
     stats.add_row(
         f"[bold spring_green3]{passes}[/]\n[grey50]pass[/]",
         f"[bold dark_orange]{warns}[/]\n[grey50]warn[/]",
         f"[bold red1]{fails}[/]\n[grey50]fail[/]",
+        f"[bold gold1]{manuals}[/]\n[grey50]manual[/]",
         f"[bold grey50]{skips}[/]\n[grey50]skip[/]",
         f"[bold grey70]{total}[/]\n[grey50]total[/]",
     )
@@ -273,6 +284,37 @@ def print_warns_table(results: list[dict]):
         if len(detail) > 40:
             detail = detail[:37] + "..."
         table.add_row(r["id"], r["title"], detail)
+
+    console.print(table)
+    console.print()
+
+
+def print_manuals_table(results: list[dict]):
+    """Render the 'Needs Manual Action' table for `manual`-status controls.
+
+    Distinct from fails: these aren't broken — `lss harden` deliberately
+    won't touch them (PAM stack edits, audit log volume opt-in, etc.).
+    Detail is shown wider than fails/warns because the remediation note
+    *is* the operator instruction; truncation defeats the point.
+    """
+    manuals = [r for r in results if r["status"] == "manual"]
+    if not manuals:
+        return
+
+    table = Table(
+        title=f"[bold gold1]Needs Manual Action ({len(manuals)})[/]",
+        caption="[grey50]These require operator action — `lss harden` will not auto-apply them.[/]",
+        border_style="gold1",
+        box=box.SIMPLE_HEAVY,
+        show_lines=True,
+        padding=(0, 1),
+    )
+    table.add_column("ID", style="bold gold1", width=10)
+    table.add_column("Control", style="grey70", width=40)
+    table.add_column("How to remediate", style="grey70")
+
+    for r in manuals:
+        table.add_row(r["id"], r["title"], r.get("detail", ""))
 
     console.print(table)
     console.print()

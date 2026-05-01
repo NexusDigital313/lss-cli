@@ -9,7 +9,7 @@ description = "The Linux Security Suite — audit, harden, and rollback Linux ho
 readme = "README.md"
 requires-python = ">=3.10"
 license = { file = "LICENSE" }
-authors = [{ name = "The Linux Security Suite", email = "blckgrndntional313proton.me@proton.me" }]
+authors = [{ name = "LSS Maintainers", email = "blckgrndntional313proton.me@proton.me" }]
 keywords = ["cis", "hardening", "security", "audit", "linux", "compliance"]
 classifiers = [
     "Development Status :: 4 - Beta",
@@ -39,11 +39,9 @@ dev = [
 [project.scripts]
 lss = "lss.cli:main"
 
-[project.urls]
-Homepage = "https://linuxsecuritysuite.com"
-
-[tool.setuptools]
-packages = ["lss", "lss.lib", "lss.controls"]
+[tool.setuptools.packages.find]
+include = ["lss*"]
+exclude = ["tests*", "examples*", "completions*", "launch*"]
 
 [tool.setuptools.dynamic]
 version = { attr = "lss.__version__" }

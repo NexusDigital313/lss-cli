@@ -67,7 +67,17 @@ def backup_file(path: str, run_id: str | None = None) -> str:
         return ""
     dest_dir = BACKUPS_DIR / rid
     dest_dir.mkdir(parents=True, exist_ok=True)
-    dest = dest_dir / _sanitize_path(path)
+    base = _sanitize_path(path)
+    # Each call must produce a UNIQUE backup. When several controls modify
+    # the same file in one run, a single deterministic dest would let later
+    # backups overwrite earlier ones — leaving every entry's "backup"
+    # pointing to the same final state, so reverse-order restore can't
+    # rebuild the original. Append a counter to keep them distinct.
+    dest = dest_dir / base
+    counter = 0
+    while dest.exists():
+        counter += 1
+        dest = dest_dir / f"{base}.{counter:04d}"
     # copy2 preserves mode/mtime so rollback restores them too
     shutil.copy2(src, dest)
     return str(dest)

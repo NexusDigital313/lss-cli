@@ -12,7 +12,7 @@ from lss.lib import distro
 from lss.lib.output import (
     console, info, header, rule, heavy_rule, section_header,
     print_result, print_summary, print_banner_art, print_host_info,
-    print_fails_table, print_warns_table,
+    print_fails_table, print_warns_table, print_manuals_table,
     DIM, RESET, BOLD, CYAN,
 )
 from lss.lib.registry import get_controls, CheckResult
@@ -75,7 +75,7 @@ def run_audit(args) -> int:
         print_host_info(host.name, _hostname(), host.kernel, uptime, len(controls))
 
     results: list[dict] = []
-    passes = warns = fails = skips = 0
+    passes = warns = fails = manuals = skips = 0
     current_section = ""
     seen_sections: set[str] = set()
 
@@ -110,18 +110,22 @@ def run_audit(args) -> int:
             passes += 1
         elif r.status == "warn":
             warns += 1
+        elif r.status == "manual":
+            manuals += 1
         elif r.status == "skip":
             skips += 1
         else:
             fails += 1
 
     if not json_mode:
-        print_summary(passes, warns, fails, skips)
+        print_summary(passes, warns, fails, skips, manuals=manuals)
         print_fails_table(results)
         print_warns_table(results)
+        print_manuals_table(results)
 
     # Always persist results — `lss report` reads them
-    _save_results(results, host, passes, warns, fails, skips, json_mode=json_mode)
+    _save_results(results, host, passes, warns, fails, skips, manuals=manuals,
+                  json_mode=json_mode, args=args)
 
     if not json_mode and fails > 0:
         console.print(
@@ -131,11 +135,16 @@ def run_audit(args) -> int:
         console.print()
 
     if json_mode:
-        applicable = passes + warns + fails
+        # Hardened score: passes / (pass+warn+fail) — what LSS finished
+        # Compliance score: passes / (pass+warn+fail+manual) — full posture
+        hardened_applicable = passes + warns + fails
+        compliance_applicable = passes + warns + fails + manuals
         print(json.dumps({"controls": results, "summary": {
-            "pass": passes, "warn": warns, "fail": fails, "skip": skips,
+            "pass": passes, "warn": warns, "fail": fails,
+            "manual": manuals, "skip": skips,
             "total": len(results),
-            "score": round(passes / applicable * 100) if applicable else 0,
+            "score": round(passes / hardened_applicable * 100) if hardened_applicable else 0,
+            "compliance_score": round(passes / compliance_applicable * 100) if compliance_applicable else 0,
         }}, indent=2))
 
     return fails
@@ -149,14 +158,15 @@ def _hostname() -> str:
         return "unknown"
 
 
-def _save_results(results: list[dict], host, passes: int, warns: int, fails: int, skips: int = 0, json_mode: bool = False):
+def _save_results(results: list[dict], host, passes: int, warns: int, fails: int, skips: int = 0, manuals: int = 0, json_mode: bool = False, args=None):
     """Write audit results to disk for report generation."""
     import os
     RESULTS_DIR.mkdir(parents=True, exist_ok=True)
 
     ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-    total = passes + warns + fails + skips
-    applicable = passes + warns + fails
+    total = passes + warns + fails + skips + manuals
+    hardened_applicable = passes + warns + fails
+    compliance_applicable = passes + warns + fails + manuals
     data = {
         "timestamp": ts,
         "host": {
@@ -170,9 +180,11 @@ def _save_results(results: list[dict], host, passes: int, warns: int, fails: int
             "pass": passes,
             "warn": warns,
             "fail": fails,
+            "manual": manuals,
             "skip": skips,
             "total": total,
-            "score": round(passes / applicable * 100) if applicable else 0,
+            "score": round(passes / hardened_applicable * 100) if hardened_applicable else 0,
+            "compliance_score": round(passes / compliance_applicable * 100) if compliance_applicable else 0,
         },
         "controls": results,
     }
@@ -188,7 +200,33 @@ def _save_results(results: list[dict], host, passes: int, warns: int, fails: int
     tmp_link.symlink_to(out.name)
     os.replace(tmp_link, latest)
 
+    # Auto-emit HTML report alongside the JSON (customers shouldn't have to
+    # run a second command just to view results in a browser). Honors
+    # --no-report on the audit subcommand for JSON-only / scripted use.
+    # --json implies --no-report: scripted/CI consumers want stdout JSON, not
+    # an unrelated HTML side-effect on disk.
+    html_path = None
+    skip_html = json_mode or bool(
+        args is not None and getattr(args, "no_report", False)
+    )
+    if not skip_html:
+        try:
+            from lss.report import write_html_report
+            from lss.lib.paths import file_uri, open_in_browser
+            html_path = write_html_report(data)
+        except Exception as exc:
+            if not json_mode:
+                console.print(f"  [yellow]Could not generate HTML report:[/] {exc}")
+
     if not json_mode:
         console.print(f"  [grey50]Report data:[/]  [grey70]{out}[/]")
-        console.print("  [grey50]HTML report:[/]  [bold]sudo lss report[/]")
+        if html_path is not None:
+            console.print(f"  [grey50]HTML report:[/]  [bold]{file_uri(html_path)}[/]")
+        else:
+            console.print("  [grey50]HTML report:[/]  [bold]sudo lss report[/]")
         console.print()
+
+    if html_path is not None and args is not None and getattr(args, "open", False):
+        if not open_in_browser(html_path):
+            if not json_mode:
+                console.print("  [yellow]Could not launch a browser; open the URL above manually.[/]")

@@ -33,6 +33,16 @@ def build_parser() -> argparse.ArgumentParser:
         action="append",
         help="run only specific control(s), e.g. --control 1.1.1 --control 5.2.5",
     )
+    audit.add_argument(
+        "--no-report",
+        action="store_true",
+        help="skip the HTML report (HTML default is ~/.local/share/lss/reports/; JSON always lands in /var/log/lss/). Implied by --json.",
+    )
+    audit.add_argument(
+        "--open",
+        action="store_true",
+        help="open the HTML report in the default browser when finished",
+    )
 
     # --- harden ---
     harden = sub.add_parser("harden", help="apply remediations for failing controls")
@@ -63,16 +73,21 @@ def build_parser() -> argparse.ArgumentParser:
     report.add_argument(
         "-o", "--output",
         metavar="PATH",
-        help="output path for the report (default: /var/log/lss/report-<timestamp>.html)",
+        help="output path for the report (default: ~/.local/share/lss/reports/report-<timestamp>.html for the invoking user)",
     )
     report.add_argument(
         "--baseline",
         metavar="PATH",
         help="path to a previous audit JSON; report renders a before/after delta against it",
     )
+    report.add_argument(
+        "--open",
+        action="store_true",
+        help="open the report in the default browser after writing",
+    )
 
     # --- list ---
-    sub.add_parser("list", help="list all 204 controls with descriptions")
+    sub.add_parser("list", help="list all 206 controls with descriptions")
 
     # --- help-all ---
     sub.add_parser("help-all", help="show all commands with full descriptions and consequences")
@@ -95,13 +110,18 @@ def _print_help_all():
                     Checks things like firewall rules, SSH settings, password policies,
                     file permissions, running services, and kernel hardening.
     Changes made:   {BOLD}None.{RESET} This is completely read-only. Nothing is modified.
-    Output:         Colored terminal report + JSON file saved to /var/log/lss/.
+    Output:         Colored terminal report,
+                    JSON audit log saved to /var/log/lss/ (root-only),
+                    HTML report saved to ~/.local/share/lss/reports/ (readable by you).
     When to use:    Anytime you want to see how secure your system is.
 
     Options:
       --control ID    Only check specific control(s).  Example: --control 5.2.5
       --json          Also print results as machine-readable JSON.
       --profile X     Choose server, workstation, or hardened profile.
+      --open          Open the HTML report in your default browser when finished.
+      --no-report     Skip the HTML report. Implied by --json. JSON always lands
+                      in /var/log/lss/; HTML default is ~/.local/share/lss/reports/.
 
 {BOLD}  lss harden --confirm{RESET}
     What it does:   Fixes every failing control that has an automatic fix.
@@ -142,12 +162,18 @@ def _print_help_all():
     What it does:   Generates a styled HTML report from the last audit.
                     Shows every control with pass/warn/fail status, a score,
                     and a summary you can print or email to a client.
+                    {DIM}(lss audit already emits this report — use this command
+                    when you want to regenerate, render against a baseline,
+                    or save to a custom path.){RESET}
     Changes made:   {BOLD}None.{RESET} Just writes an HTML file.
+    Default path:   ~/.local/share/lss/reports/report-<timestamp>.html
+                    (owned by the user who ran sudo, mode 0640)
     When to use:    When you need proof of your security posture for a client,
                     an auditor, or your own records.
 
     Options:
       -o PATH         Save the report to a specific file path.
+      --open          Open the report in your default browser after writing.
       --baseline PATH Render a before/after delta against a previous audit
                       JSON (e.g. /var/log/lss/audit-<earlier-ts>.json).
                       Adds Before/After/Change columns and a delta summary
@@ -155,7 +181,7 @@ def _print_help_all():
                       Regressed, Still failing, or Unchanged.
 
 {BOLD}  lss list{RESET}
-    What it does:   Shows all 204 controls with their ID, section, title,
+    What it does:   Shows all 206 controls with their ID, section, title,
                     and whether they have an automatic fix available.
     Changes made:   {BOLD}None.{RESET} Just prints a list.
     When to use:    When you want to see everything LSS checks for.
@@ -168,8 +194,8 @@ def _print_help_all():
 
 {BOLD}{CYAN}EXAMPLES{RESET}
 
-    {DIM}# See how secure your system is (no changes){RESET}
-    sudo lss audit
+    {DIM}# See how secure your system is (no changes) and open the report{RESET}
+    sudo lss audit --open
 
     {DIM}# Fix everything that's failing (with undo available){RESET}
     sudo lss harden --confirm
@@ -186,7 +212,7 @@ def _print_help_all():
     {DIM}# Generate a report you can print{RESET}
     sudo lss report -o ~/my-audit.html
 
-    {DIM}# See all 204 controls{RESET}
+    {DIM}# See all 206 controls{RESET}
     sudo lss list
 """)
 
@@ -221,18 +247,18 @@ def main(argv: list[str] | None = None):
         err("lss must be run as root")
         sys.exit(1)
 
-    banner()
+    # Banner is decorative — suppress in --json so stdout stays parseable.
+    if not getattr(args, "json", False):
+        banner()
 
-    # License gate — applies to every mutating command. In bootstrap mode
-    # this is a no-op with a one-time evaluation notice; once Gumroad
-    # product slugs are wired and BOOTSTRAP_MODE is flipped off in
-    # lss/lib/license.py, this enforces a valid license key.
+    # License gate — applies to every mutating command. The default stub in
+    # lss/lib/license.py is permissive (returns valid=True). Wire it to a
+    # license-verify provider to enforce.
     if args.command in ("harden", "rollback", "report"):
         from lss.lib.license import check_license
         status = check_license(getattr(args, "license_key", None))
         if not status.valid:
             err(f"license check failed: {status.detail}")
-            err("Get a license at https://linuxsecuritysuite.com")
             sys.exit(2)
 
     if args.command == "audit":

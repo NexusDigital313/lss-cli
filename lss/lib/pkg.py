@@ -81,7 +81,7 @@ def install(pkg: str) -> list[RollbackEntry]:
     that were pulled in transitively. On Debian, those dependencies remain
     marked as manually-installed (because the install was non-interactive)
     and won't be `apt autoremove`d unless the operator runs that explicitly.
-    A snapshot-and-diff dpkg approach is planned for v0.5.1.
+    A snapshot-and-diff dpkg approach is planned for a future release.
     """
     if is_installed(pkg):
         return []

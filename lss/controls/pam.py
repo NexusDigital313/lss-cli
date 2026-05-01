@@ -101,13 +101,49 @@ register(Control(
 # the auth stack before passing. The fix continues to write faillock.conf so
 # the policy is applied on hosts where pam_faillock is configured, but the
 # check no longer pretends a stand-alone faillock.conf is sufficient.
+#
+# Debian 12 (and earlier) stock libpam-runtime does NOT ship a faillock
+# pam-config profile, despite older docs implying it does — only unix,
+# systemd, mkhomedir, and gnome-keyring profiles are present in
+# /usr/share/pam-configs/. So `pam-auth-update --enable faillock --package`
+# silently no-ops on a stock host. To close that gap without taking on the
+# full PAM-stack-edit subsystem (deferred to a future release), the 5.3.2 fix now
+# installs an LSS-provided faillock profile at /usr/share/pam-configs/faillock
+# (rollback removes it). Operators still explicitly enable it via
+# `sudo pam-auth-update --enable faillock --package` — we never auto-edit
+# common-auth ourselves, since a botched PAM stack edit can lock the host.
+
+# Conservative pam-auth-update profile. Default: no — operator must opt in
+# with --enable. Auth uses [default=ignore] so a missing or broken
+# pam_faillock.so cannot break the auth chain (no [default=die]); lockout
+# enforcement happens in the Account stack via `required pam_faillock.so`,
+# which is how authselect's with-faillock feature gets it right too.
+_FAILLOCK_PAM_PROFILE = """\
+Name: pam_faillock — track and prevent multiple bad logins (provided by LSS)
+Default: no
+Priority: 0
+Auth-Type: Primary
+Auth:
+\t[default=ignore]\tpam_faillock.so authfail
+Auth-Initial:
+\t[default=ignore]\tpam_faillock.so authfail
+Account-Type: Additional
+Account:
+\trequired\tpam_faillock.so
+Account-Initial:
+\trequired\tpam_faillock.so
+"""
+
+_FAILLOCK_PROFILE_PATH = Path("/usr/share/pam-configs/faillock")
 
 _FAILLOCK_REMEDIATION = (
-    "to enable: install pam_faillock in the PAM auth stack — on Debian/Ubuntu, "
-    "run `sudo pam-auth-update --enable faillock --package` (the libpam-runtime "
-    "ships a faillock pam-config profile); on RHEL/Fedora with authselect, "
-    "`sudo authselect enable-feature with-faillock`. Then re-run lss harden to "
-    "write the deny/unlock policy to /etc/security/faillock.conf."
+    "to enable: an LSS-provided faillock pam-config profile is installed at "
+    "/usr/share/pam-configs/faillock by `sudo lss harden --confirm --control 5.3.2`. "
+    "Stock Debian/Ubuntu libpam-runtime does NOT ship one. After the profile is in "
+    "place, run `sudo pam-auth-update --enable faillock --package` to wire it into "
+    "/etc/pam.d/common-auth. On RHEL/Fedora with authselect, "
+    "`sudo authselect enable-feature with-faillock` instead. Re-run lss audit to "
+    "confirm; faillock.conf is already populated with the deny/unlock policy."
 )
 
 
@@ -129,18 +165,30 @@ def _check_faillock() -> CheckResult:
         p = Path(pam_path)
         if p.exists() and _faillock_module_active(p.read_text()):
             return CheckResult("pass", f"pam_faillock active in {pam_path}")
-    return CheckResult("fail", "pam_faillock not active in PAM auth stack — " + _FAILLOCK_REMEDIATION)
+    return CheckResult("manual", "pam_faillock not active in PAM auth stack — " + _FAILLOCK_REMEDIATION)
 
 
 def _fix_faillock() -> list[RollbackEntry]:
-    """Write CIS-aligned lockout policy to /etc/security/faillock.conf.
+    """Write CIS-aligned lockout policy to /etc/security/faillock.conf and
+    install an LSS-provided faillock pam-config profile if one is missing.
 
-    Writes the config file only. The check requires pam_faillock to be active
-    in the PAM stack first; this fix complements that — once an operator
-    enables the faillock pam-config profile (or authselect feature), this
-    fix's previously-written /etc/security/faillock.conf provides the
-    deny/unlock policy that pam_faillock reads. Idempotent and rollback-safe.
+    Two steps, both rollback-tracked:
+
+    1. faillock.conf — writes deny=5, unlock_time=900, fail_interval=900.
+       Idempotent (key updates in place, no duplication).
+
+    2. /usr/share/pam-configs/faillock — only created if absent and the
+       /usr/share/pam-configs/ directory exists (Debian-family with
+       libpam-runtime). If a profile is already present (operator-supplied,
+       or installed by a future libpam-runtime), we leave it alone.
+
+    The fix never edits /etc/pam.d/common-auth itself. The operator runs
+    `sudo pam-auth-update --enable faillock --package` to wire the profile
+    into the live PAM stack — that's the conservative split: LSS supplies
+    the profile, operator chooses when to activate.
     """
+    entries: list[RollbackEntry] = []
+
     conf = Path("/etc/security/faillock.conf")
     bkp = journal.backup_file(str(conf))
     desired = {"deny": "5", "unlock_time": "900", "fail_interval": "900"}
@@ -158,12 +206,37 @@ def _fix_faillock() -> list[RollbackEntry]:
                 lines.append("\n")
             lines.append(new_line)
     conf.write_text("".join(lines))
-    return [RollbackEntry(
+    entries.append(RollbackEntry(
         action="wrote pam_faillock policy to faillock.conf",
         path=str(conf),
         backup=bkp,
         undo=[] if bkp else [["rm", "-f", str(conf)]],
-    )]
+    ))
+
+    # Install the pam-config profile only on hosts that actually use
+    # pam-auth-update (i.e., /usr/share/pam-configs/ exists). Don't clobber
+    # an existing profile — could be a distro-supplied one or operator-
+    # customized.
+    pam_configs_dir = _FAILLOCK_PROFILE_PATH.parent
+    if pam_configs_dir.is_dir() and not _FAILLOCK_PROFILE_PATH.exists():
+        _FAILLOCK_PROFILE_PATH.write_text(_FAILLOCK_PAM_PROFILE)
+        entries.append(RollbackEntry(
+            action="installed LSS faillock pam-config profile",
+            path=str(_FAILLOCK_PROFILE_PATH),
+            backup="",
+            # No backup (the file did not previously exist), so undo just
+            # removes it. If the operator ran `pam-auth-update --enable
+            # faillock --package` between harden and rollback, the live
+            # common-auth still references the profile name; rollback also
+            # disables it via pam-auth-update so the auth stack stays
+            # consistent.
+            undo=[
+                ["pam-auth-update", "--package", "--disable", "faillock"],
+                ["rm", "-f", str(_FAILLOCK_PROFILE_PATH)],
+            ],
+        ))
+
+    return entries
 
 
 register(Control(
@@ -222,7 +295,7 @@ def _check_pw_reuse() -> CheckResult:
                     val = int(m.group(1))
                     if val >= 5:
                         return CheckResult("pass", f"pam_unix remember={val}")
-                    return CheckResult("fail", f"pam_unix remember={val}, recommended: >=5")
+                    return CheckResult("manual", f"pam_unix remember={val}, recommended: >=5 — edit the pam_unix line in /etc/pam.d/common-password (or system-auth) to raise the value")
             if "pam_pwhistory" in line:
                 pwhistory_in_stack = True
                 m = re.search(r"\bremember=(\d+)", line)
@@ -230,13 +303,13 @@ def _check_pw_reuse() -> CheckResult:
                     pwhistory_remember_arg = int(m.group(1))
 
     if not pwhistory_in_stack:
-        return CheckResult("fail", "pam_pwhistory not in PAM password stack — " + _REMEDIATION_NOTE)
+        return CheckResult("manual", "pam_pwhistory not in PAM password stack — " + _REMEDIATION_NOTE)
 
     # Module argument takes precedence over pwhistory.conf.
     if pwhistory_remember_arg is not None:
         if pwhistory_remember_arg >= 5:
             return CheckResult("pass", f"pam_pwhistory remember={pwhistory_remember_arg}")
-        return CheckResult("fail", f"pam_pwhistory remember={pwhistory_remember_arg}, recommended: >=5")
+        return CheckResult("manual", f"pam_pwhistory remember={pwhistory_remember_arg}, recommended: >=5 — raise the remember= module arg or set remember=5+ in /etc/security/pwhistory.conf")
 
     # Fall back to /etc/security/pwhistory.conf.
     conf = Path(PWHISTORY_CONF)
@@ -250,7 +323,7 @@ def _check_pw_reuse() -> CheckResult:
                 val = int(m.group(1))
                 if val >= 5:
                     return CheckResult("pass", f"pwhistory.conf remember={val}")
-                return CheckResult("fail", f"pwhistory.conf remember={val}, recommended: >=5")
+                return CheckResult("manual", f"pwhistory.conf remember={val}, recommended: >=5 — edit /etc/security/pwhistory.conf to raise the remember value")
 
     # pam_pwhistory in the stack with no explicit `remember` anywhere uses the
     # module's built-in default of 10 (per pam_pwhistory(8)), which is >=5.
@@ -265,8 +338,8 @@ def _check_pw_reuse() -> CheckResult:
 # does not process — the policy was never actually enforced. Rather than ship
 # another half-correct fix that might lock customers out of their own systems,
 # 5.3.3 is documented as audit-only with a precise remediation command in the
-# detail string. Full automated remediation is planned for v0.5.1+ as a
-# dedicated PAM-editing subsystem.
+# detail string. Full automated remediation is planned for a future release
+# as a dedicated PAM-editing subsystem.
 
 
 register(Control(

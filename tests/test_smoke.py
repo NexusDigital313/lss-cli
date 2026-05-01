@@ -254,3 +254,140 @@ def test_syslog_helper_never_raises():
     lss_syslog.info("test message")
     lss_syslog.warn("test warning")
     lss_syslog.err("test error")
+
+
+# --- Regression tests for the multi-control-same-file rollback bug class ---
+# When several controls modify the same file in one harden run, three things
+# must hold for rollback to truly undo everything:
+#   1. The OUTER loop in rollback.run_rollback iterates controls in REVERSE
+#      application order (so an early control's `rm -f` runs LAST, after later
+#      controls have stopped restoring their backups onto a recreated file).
+#   2. journal.backup_file produces a unique destination path per call,
+#      otherwise repeated backups overwrite each other and the journal entry's
+#      "backup" field points to the wrong snapshot.
+#   3. A control that CREATES a persistence file (no prior backup) must emit
+#      `rm -f` in its undo, otherwise the file survives rollback. sshd.py
+#      gets this right; sysctl.py 0.5.1 missed it.
+
+
+def test_rollback_outer_loop_reverses_controls(tmp_path, monkeypatch):
+    """rollback.run_rollback must iterate controls in reverse application order.
+
+    Scenario: control A creates a file (undo = rm -f), control B modifies it
+    (undo = restore from backup of post-A state). Forward outer-loop order
+    would run A's rm-f first, then B's restore would recreate the file. In
+    reverse order, B's restore runs first (returns file to post-A state),
+    then A's rm-f deletes it.
+    """
+    from lss.lib import journal
+    from lss import rollback
+
+    monkeypatch.setattr(journal, "JOURNAL_DIR", tmp_path / "j")
+    monkeypatch.setattr(journal, "BACKUPS_DIR", tmp_path / "j" / "backups")
+
+    run_id = journal.new_run_id()
+    journal.set_current_run_id(run_id)
+
+    target = tmp_path / "shared.conf"
+
+    # Simulate harden: control A creates the file (no pre-existing backup)
+    target.write_text("from_a = 1\n")
+    bkp_a = ""
+
+    # Control B then modifies it; backup_file snapshots post-A state
+    bkp_b = journal.backup_file(str(target))
+    target.write_text("from_a = 1\nfrom_b = 1\n")
+
+    entries = {
+        "1.1.1": [{
+            "action": "added from_a",
+            "undo": [["rm", "-f", str(target)]],
+            "path": str(target),
+            "backup": bkp_a,
+        }],
+        "1.1.2": [{
+            "action": "added from_b",
+            "undo": [],
+            "path": str(target),
+            "backup": bkp_b,
+        }],
+    }
+    journal.write_run(run_id, entries)
+    journal.set_current_run_id(None)
+
+    class Args:
+        last = True
+        run_id = None
+        control = None
+
+    rollback.run_rollback(Args())
+
+    assert not target.exists(), (
+        "rollback left the file behind — outer loop is iterating controls "
+        "in forward order, so 1.1.1's `rm -f` ran before 1.1.2 restored its "
+        "backup, and the restore recreated the file with stale state"
+    )
+
+
+def test_backup_file_produces_unique_paths_for_repeated_calls(tmp_path, monkeypatch):
+    """journal.backup_file must not overwrite earlier backups for the same path.
+
+    Multiple controls in a single run may snapshot the same file. If
+    backup_file returns a deterministic path, the second call's shutil.copy2
+    silently overwrites the first call's backup, so reverse-order rollback
+    can no longer rebuild the original file from the chain.
+    """
+    from lss.lib import journal
+
+    monkeypatch.setattr(journal, "BACKUPS_DIR", tmp_path / "backups")
+    journal.set_current_run_id("test-run")
+
+    src = tmp_path / "shared.conf"
+
+    src.write_text("v1\n")
+    bkp1 = journal.backup_file(str(src))
+
+    src.write_text("v2\n")
+    bkp2 = journal.backup_file(str(src))
+
+    src.write_text("v3\n")
+    bkp3 = journal.backup_file(str(src))
+
+    assert len({bkp1, bkp2, bkp3}) == 3, "backup_file produced duplicate paths"
+    assert Path(bkp1).read_text() == "v1\n"
+    assert Path(bkp2).read_text() == "v2\n"
+    assert Path(bkp3).read_text() == "v3\n"
+
+    journal.set_current_run_id(None)
+
+
+def test_sysctl_set_emits_rm_f_when_creating_persistence_file(tmp_path, monkeypatch):
+    """sysctl.set_sysctl must add `rm -f SYSCTL_CONF` to undo when the
+    persistence file did not exist before this control ran.
+
+    Without this, the dropfile survives rollback and `lss audit` keeps
+    reporting the post-harden state. sshd.py:set_sysctl_setting has the
+    correct shape — sysctl.py must mirror it.
+    """
+    from lss.lib import sysctl, journal
+
+    sysctl_conf = tmp_path / "80-lss.conf"  # does NOT exist yet
+    monkeypatch.setattr(sysctl, "SYSCTL_CONF", str(sysctl_conf))
+    monkeypatch.setattr(journal, "BACKUPS_DIR", tmp_path / "backups")
+    journal.set_current_run_id("test-run")
+
+    # No-op the actual kernel call, and pretend the key has no current value
+    monkeypatch.setattr(
+        sysctl.subprocess, "run",
+        lambda *a, **kw: subprocess.CompletedProcess(args=a, returncode=0, stdout="", stderr=""),
+    )
+    monkeypatch.setattr(sysctl, "get_sysctl", lambda k: None)
+
+    entry = sysctl.set_sysctl("kernel.example_key", "1")
+
+    assert ["rm", "-f", str(sysctl_conf)] in entry.undo, (
+        "sysctl.set_sysctl did not add `rm -f` to undo for a freshly-created "
+        "persistence file — rollback will leave the dropfile behind"
+    )
+
+    journal.set_current_run_id(None)

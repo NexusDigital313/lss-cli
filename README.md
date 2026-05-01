@@ -2,17 +2,17 @@
 
 **Audit, harden, and roll back Linux hosts against the CIS Benchmark — with a safety net.**
 
-[![Version](https://img.shields.io/badge/version-0.5.0-blue.svg)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-1.0.0-blue.svg)](CHANGELOG.md)
 [![License](https://img.shields.io/badge/license-Commercial-lightgrey.svg)](LICENSE)
 [![Python](https://img.shields.io/badge/python-3.10%2B-blue.svg)](https://www.python.org/downloads/)
 
 LSS scans your Linux host against **206 CIS-aligned hardening controls**, auto-fixes **172 of them**, and records every change in a rollback journal so a bad pass is one command away from being reversed. No agent, no cloud, no six-figure GRC platform — a single CLI for operators who want CIS-grade hardening they can actually undo.
 
 ```
-$ sudo lss audit
+$ sudo lss audit                     # writes JSON to /var/log/lss/, HTML to your home, owned by you
 $ sudo lss harden --confirm          # applies 172 auto-fixes, skips the 34 that shouldn't be automated
 $ sudo lss rollback --last           # something broke? reverse it
-$ sudo lss report -o audit.html      # printable, auditor-friendly HTML
+$ sudo lss report --open             # regenerate HTML and open it in your browser
 ```
 
 > **Preview the output**: [`examples/sample-audit-report.html`](examples/sample-audit-report.html) is a synthetic full-coverage report rendered from real LSS output. Open it in a browser to see what a customer-facing audit deliverable looks like.
@@ -21,25 +21,27 @@ $ sudo lss report -o audit.html      # printable, auditor-friendly HTML
 
 ## Install
 
-```bash
-pip install lss
-```
-
-Or from a release tarball:
+Install from the release tarball:
 
 ```bash
-pip install lss-0.5.0.tar.gz
+pip install lss-1.0.0.tar.gz
 ```
 
-The Gumroad bundle ships `SHA256SUMS` alongside the wheel and sdist. Verify with `sha256sum -c SHA256SUMS` before installing.
+The release bundle ships `SHA256SUMS` alongside the wheel and sdist. Verify with `sha256sum -c SHA256SUMS` before installing.
 
 ---
 
 ## Quick start
 
 ```bash
-# Read-only audit — no changes, writes nothing
+# Read-only audit — JSON saved to /var/log/lss/, HTML auto-emitted to your home
 sudo lss audit
+
+# Same, but open the HTML report in your default browser when finished
+sudo lss audit --open
+
+# Skip the HTML and only emit JSON (for scripts / CI pipelines)
+sudo lss audit --no-report
 
 # Apply every available auto-fix (172 of 206 controls)
 sudo lss harden --confirm
@@ -62,8 +64,8 @@ sudo lss rollback --control 5.2.3
 # Machine-readable audit output (stdout is pure JSON; decorative output on stderr)
 sudo lss audit --json > audit.json
 
-# Printable HTML report
-sudo lss report -o ~/audit.html
+# Regenerate HTML from the latest audit and open it in a browser
+sudo lss report --open
 
 # Before/after delta — shows what changed since a previous audit
 sudo lss report --baseline /var/log/lss/audit-<earlier-ts>.json -o delta.html
@@ -71,6 +73,17 @@ sudo lss report --baseline /var/log/lss/audit-<earlier-ts>.json -o delta.html
 # Full command reference with consequences called out
 lss help-all
 ```
+
+### Where files land
+
+| Artifact | Path | Owner / mode |
+|---|---|---|
+| JSON audit log | `/var/log/lss/audit-<ts>.json` | `root:root` `0640` (tamper-evident; root-only) |
+| HTML report (default) | `~/.local/share/lss/reports/report-<ts>.html` | invoking user, `0640` |
+| Rollback journal | `/var/log/lss/journal/<run-id>/` | `root:root` |
+| File backups (for rollback) | `/var/log/lss/journal/backups/<run-id>/` | `root:root` |
+
+When invoked under `sudo`, LSS resolves the human operator via `SUDO_UID`/`SUDO_GID`/`SUDO_USER` and writes HTML reports into that user's home so they're readable without `sudo`. In true-root contexts (cron, systemd unit, container entrypoint) the HTML falls back to `/var/log/lss/`.
 
 ---
 
@@ -88,7 +101,7 @@ lss help-all
 - **Bootloader/kernel-param edits** (1.4.2, 1.6.2, 4.1.2) — a bad GRUB write can render the host unbootable, and rollback can't reach a box that won't boot
 - **Partition layout** (1.1.2–1.1.7) — separating `/tmp`, `/var`, `/home` requires repartitioning with downtime and a recovery plan
 - **AppArmor enforce** (1.6.3) — moving a profile from complain → enforce can break running apps; operator must review
-- **PAM stack edits** (5.3.3) — correctly editing the PAM password stack across Debian (pam-auth-update profile), RHEL (authselect), and bare Linux is its own subsystem; full automation deferred to v0.5.1
+- **PAM stack edits** (5.3.3) — correctly editing the PAM password stack across Debian (pam-auth-update profile), RHEL (authselect), and bare Linux is its own subsystem; full automation deferred to a future release
 - **Duplicate UIDs/usernames/groupnames** (6.2.1, 6.2.3–6.2.7) — requires an operator to decide which account is real
 - **Account-state decisions** (5.4.2, 6.2.15) — no safe auto-choice between `passwd -l` vs `passwd -d` vs `/usr/sbin/nologin`
 - **Evidence-destruction risks** (6.1.10, 6.1.11, 6.1.13) — auto-chowning an unowned file or stripping SUID can destroy forensic evidence
@@ -156,38 +169,20 @@ If you're a Fortune 500 buying through procurement, buy OpenSCAP or InSpec. If y
 
 ## Requirements
 
-- Linux — Debian 12, Ubuntu 22.04/24.04, Kali (primary targets). RHEL / Rocky / Alma supported for a subset of controls; full parity in v1.1.
+- Linux — Debian 12, Ubuntu 22.04/24.04, Kali (primary targets). RHEL / Rocky / Alma supported for a subset of controls; full parity in a future release.
 - Python 3.10+
 - Root for `audit`, `harden`, `rollback`, `report`. Read-only commands (`list`, `help-all`, `--version`) run unprivileged.
 
 ---
 
-## Security
+## License
 
-Found a vulnerability? See [SECURITY.md](SECURITY.md) for the private disclosure process. Do **not** open a public issue.
+LSS is commercial software. See [LICENSE](LICENSE) for the full terms.
 
----
-
-## Support
-
-- **Community**: GitHub issues for bugs, feature requests, and docs gaps.
-- **Commercial**: SLA-backed email support for Pro and Enterprise license holders. See [SUPPORT.md](SUPPORT.md) for tiers.
-
----
-
-## License & pricing
-
-LSS is commercial software. Evaluation use is permitted on a single host in audit-only mode without a license key. Hardening and rollback on production hosts require a paid license.
-
-| Tier | For | Includes |
-|---|---|---|
-| **Solo** | Single operator, up to 5 hosts | Audit + harden + rollback, email support best-effort |
-| **Pro** | Small ops teams, up to 50 hosts | + priority support, early access, usage reports |
-| **Enterprise** | Fleets, regulated environments | + site license, SLA, onboarding, custom controls |
-
-Pricing and purchase at **<https://linuxsecuritysuite.com>**.
-
-See [LICENSE](LICENSE) for the full terms.
+The codebase ships with a license-key gate (`lss/lib/license.py`) currently in
+permissive bootstrap mode — every command runs without a key but a one-time
+notice is printed. The gate is wired so an operator can flip enforcement on by
+setting a license-verify endpoint URL and the `LSS_ENFORCE_LICENSE` env var.
 
 ---
 
@@ -195,6 +190,11 @@ See [LICENSE](LICENSE) for the full terms.
 
 See [CHANGELOG.md](CHANGELOG.md). Releases follow [Semantic Versioning](https://semver.org/).
 
-## Contributing
+---
 
-Pull requests welcome for bug fixes and documentation improvements. See [CONTRIBUTING.md](CONTRIBUTING.md) for code rules (no `shell=True`, backup-before-modify, argv-list undos).
+## Codebase rules
+
+For developers extending LSS, [CONTRIBUTING.md](CONTRIBUTING.md) documents the
+code rules enforced by the regression test suite: no `shell=True`,
+backup-before-modify, argv-list rollback undos, and refuse-don't-cosmetic-pass
+on missing prerequisites.

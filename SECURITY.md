@@ -6,9 +6,9 @@ The Linux Security Suite (LSS) is a security tool. Vulnerabilities in LSS itself
 
 **Do not file a public GitHub issue for security vulnerabilities.**
 
-Email: `security@linuxsecuritysuite.com`
+Email: `blckgrndntional313proton.me@proton.me` (ProtonMail).
 
-If you'd like to encrypt your report, request our PGP public key in your initial (unencrypted) email and we'll respond with it within 24 hours.
+If you'd like to encrypt your report, request a PGP public key in your initial (unencrypted) email and we'll respond with it within 24 hours.
 
 In your report, please include:
 

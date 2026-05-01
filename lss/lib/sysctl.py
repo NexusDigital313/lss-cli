@@ -60,14 +60,18 @@ def set_sysctl(key: str, value: str) -> RollbackEntry:
         lines.append(new_line)
     p.write_text("".join(lines))
 
-    # Build the undo: replay the previous in-memory value if there was one.
+    # Build the undo: replay the previous in-memory value if there was one,
+    # and if this control was the first to create the persistence file,
+    # delete it on rollback. Mirrors the sshd.py pattern.
     undo: list[list[str]] = []
     if old:
         undo.append(["sysctl", "-w", f"{key}={old}"])
+    if not bkp:
+        undo.append(["rm", "-f", SYSCTL_CONF])
 
     return RollbackEntry(
         action=f"set {key} = {value}",
         undo=undo,
         path=SYSCTL_CONF,
-        backup=bkp,  # "" if file didn't exist before — rollback then deletes via undo (handled by caller if needed)
+        backup=bkp,
     )

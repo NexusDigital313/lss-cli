@@ -88,7 +88,7 @@ def test_control_check_does_not_crash(ctrl):
         assert hasattr(result, "status"), (
             f"{ctrl.id} check returned {type(result).__name__}, expected CheckResult"
         )
-        assert result.status in ("pass", "warn", "fail", "skip"), (
+        assert result.status in ("pass", "warn", "fail", "manual", "skip"), (
             f"{ctrl.id} returned status={result.status!r}; expected one of "
-            "pass/warn/fail/skip"
+            "pass/warn/fail/manual/skip"
         )

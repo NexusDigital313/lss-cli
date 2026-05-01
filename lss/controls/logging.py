@@ -125,7 +125,19 @@ def _fix_audit_log_size() -> list[RollbackEntry]:
     """
     conf = Path("/etc/audit/auditd.conf")
     if not conf.exists():
-        return []
+        # Silently returning [] would leave the harden engine reporting
+        # "Applied: 1" while the post-fix audit still warns "auditd.conf
+        # not found" — cosmetic-pass class. Refuse instead so the operator
+        # sees a clear actionable error and the run summary counts it as
+        # failed, not applied. 4.1.1.1 (`lss harden --control 4.1.1.1`)
+        # installs auditd; running the full harden pass applies that
+        # control before this one.
+        raise RuntimeError(
+            "auditd.conf not found at /etc/audit/auditd.conf — install auditd "
+            "first. On Debian/Ubuntu/Kali: `sudo apt install auditd`. On "
+            "RHEL/Fedora: `sudo dnf install audit`. Or run `sudo lss harden "
+            "--confirm --control 4.1.1.1` to install it via LSS."
+        )
     bkp = journal.backup_file(str(conf))
     lines = conf.read_text().splitlines(keepends=True)
     # Ensure last line ends with newline before potentially appending — a
@@ -185,7 +197,12 @@ def _check_audit_log_retention() -> CheckResult:
 def _fix_audit_log_retention() -> list[RollbackEntry]:
     conf = Path("/etc/audit/auditd.conf")
     if not conf.exists():
-        return []
+        raise RuntimeError(
+            "auditd.conf not found at /etc/audit/auditd.conf — install auditd "
+            "first. On Debian/Ubuntu/Kali: `sudo apt install auditd`. On "
+            "RHEL/Fedora: `sudo dnf install audit`. Or run `sudo lss harden "
+            "--confirm --control 4.1.1.1` to install it via LSS."
+        )
     bkp = journal.backup_file(str(conf))
     text = conf.read_text()
     lines = text.splitlines(keepends=True)
@@ -293,7 +310,11 @@ def _check_journald_compress() -> CheckResult:
 def _fix_journald_compress() -> list[RollbackEntry]:
     conf = Path("/etc/systemd/journald.conf")
     if not conf.exists():
-        return []
+        raise RuntimeError(
+            "journald.conf not found at /etc/systemd/journald.conf — systemd is "
+            "not installed or not the active init. journald is required for this "
+            "control; nothing to harden on a non-systemd host."
+        )
     bkp = journal.backup_file(str(conf))
     lines = conf.read_text().splitlines(keepends=True)
     found = False

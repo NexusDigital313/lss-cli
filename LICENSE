@@ -7,11 +7,10 @@ This software and its source code are the proprietary work of J. Parmenter.
 A valid, paid license is required for any use beyond evaluation on a single
 host owned by the licensee.
 
-A "license" means a current, paid entitlement issued through an authorized
-sales channel of The Linux Security Suite (e.g. linuxsecuritysuite.com or
-its designated reseller). Each license tier — Solo, Pro, and Enterprise —
-grants a specific scope of use, host count, update term, and support level
-as published at the time of purchase.
+A "license" means a current, paid entitlement issued by the copyright
+holder or an authorized reseller. The scope of use, host count, update
+term, and support level are specified in the license agreement at the
+time of purchase.
 
 Permitted, without a license:
   - Reading the source code for evaluation and security review.
@@ -38,4 +37,4 @@ FITNESS FOR A PARTICULAR PURPOSE, AND NONINFRINGEMENT. IN NO EVENT SHALL
 THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES, OR
 OTHER LIABILITY ARISING FROM USE OF THE SOFTWARE.
 
-For commercial licensing, contact: licenses@linuxsecuritysuite.com
+For commercial licensing, contact the copyright holder.

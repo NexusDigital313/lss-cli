@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8"/>
 <meta name="viewport" content="width=device-width,initial-scale=1"/>
-<title>LSS Audit Report — vps-prod-01.example.com</title>
+<title>LSS Audit Report — Debian GNU/Linux 12 (bookworm)</title>
 <style>
   :root {
     --bg: #ffffff;
@@ -63,6 +63,25 @@
   .pill.pass { background: var(--pass-bg); color: var(--pass); }
   .pill.warn { background: var(--warn-bg); color: var(--warn); }
   .pill.fail { background: var(--fail-bg); color: var(--fail); }
+  .pill.skip { background: var(--surface); color: var(--ink2); }
+  .pill.new { background: #e7eefe; color: var(--blue); }
+  .pill.change-fixed { background: var(--pass-bg); color: var(--pass); }
+  .pill.change-improved { background: var(--warn-bg); color: var(--warn); }
+  .pill.change-regressed { background: var(--fail-bg); color: var(--fail); }
+  .pill.change-still { background: var(--surface); color: var(--ink2); }
+  .pill.change-new { background: #e7eefe; color: var(--blue); }
+  .delta-row {
+    display: grid; grid-template-columns: repeat(4, 1fr); gap: 16px; margin-bottom: 24px;
+  }
+  .delta-row .stat.fixed .n { color: var(--pass); }
+  .delta-row .stat.improved .n { color: var(--warn); }
+  .delta-row .stat.regressed .n { color: var(--fail); }
+  .delta-row .stat.still .n { color: var(--warn); }
+  .delta-row .stat.unchanged .n { color: var(--ink2); }
+  .section-label {
+    font-size: 11px; text-transform: uppercase; letter-spacing: 0.08em;
+    color: var(--ink2); font-weight: 600; margin: 24px 0 8px 0;
+  }
   .footer {
     border-top: 1px solid var(--line); padding-top: 16px; margin-top: 40px;
     font-size: 12px; color: var(--ink2);
@@ -81,21 +100,23 @@
     <div style="font-size:12px;text-transform:uppercase;letter-spacing:0.1em;color:var(--ink2);margin-bottom:6px;font-weight:600">
       Hardening Audit Report
     </div>
-    <h1>vps-prod-01.example.com</h1>
+    <h1>Debian GNU/Linux 12 (bookworm)</h1>
   </div>
   <div class="meta">
-    2026-04-22T12-00-00Z<br/>
-    Linux Security Suite v0.3.0<br/>
-    Kernel: 6.1.0-29-amd64
+    20260429T204756Z<br/>
+    Linux Security Suite v1.0.0<br/>
+    Kernel: 6.1.0-42-amd64
   </div>
 </div>
 
 <div class="stat-row">
-  <div class="stat ok"><div class="n">116</div><div class="l">Pass</div></div>
-  <div class="stat warn"><div class="n">33</div><div class="l">Warn</div></div>
-  <div class="stat bad"><div class="n">44</div><div class="l">Fail</div></div>
-  <div class="stat"><div class="n">60%</div><div class="l">Score</div></div>
+  <div class="stat ok"><div class="n">86</div><div class="l">Pass</div></div>
+  <div class="stat warn"><div class="n">44</div><div class="l">Warn</div></div>
+  <div class="stat bad"><div class="n">74</div><div class="l">Fail</div></div>
+  <div class="stat"><div class="n">42%</div><div class="l">Score</div></div>
 </div>
+
+
 
 <table>
   <thead>
@@ -106,73 +127,73 @@
         <td>1.1.1.1</td>
         <td>Ensure mounting of cramfs is disabled</td>
         <td><span class="pill fail">FAIL</span></td>
-        <td class="detail">control not configured to CIS recommended value</td>
+        <td class="detail">cramfs is not disabled</td>
       </tr>
       <tr>
         <td>1.1.1.2</td>
         <td>Ensure mounting of freevxfs is disabled</td>
-        <td><span class="pill pass">PASS</span></td>
-        <td class="detail"></td>
+        <td><span class="pill fail">FAIL</span></td>
+        <td class="detail">freevxfs is not disabled</td>
       </tr>
       <tr>
         <td>1.1.1.3</td>
         <td>Ensure mounting of jffs2 is disabled</td>
-        <td><span class="pill pass">PASS</span></td>
-        <td class="detail"></td>
+        <td><span class="pill fail">FAIL</span></td>
+        <td class="detail">jffs2 is not disabled</td>
       </tr>
       <tr>
         <td>1.1.1.4</td>
         <td>Ensure mounting of hfs is disabled</td>
-        <td><span class="pill pass">PASS</span></td>
-        <td class="detail"></td>
+        <td><span class="pill fail">FAIL</span></td>
+        <td class="detail">hfs is not disabled</td>
       </tr>
       <tr>
         <td>1.1.1.5</td>
         <td>Ensure mounting of hfsplus is disabled</td>
         <td><span class="pill fail">FAIL</span></td>
-        <td class="detail">control not configured to CIS recommended value</td>
+        <td class="detail">hfsplus is not disabled</td>
       </tr>
       <tr>
         <td>1.1.1.6</td>
         <td>Ensure mounting of udf is disabled</td>
         <td><span class="pill fail">FAIL</span></td>
-        <td class="detail">control not configured to CIS recommended value</td>
+        <td class="detail">udf is not disabled</td>
       </tr>
       <tr>
         <td>1.1.2</td>
         <td>Ensure /tmp is configured</td>
-        <td><span class="pill warn">WARN</span></td>
-        <td class="detail">configured but value differs from recommended</td>
+        <td><span class="pill pass">PASS</span></td>
+        <td class="detail"></td>
       </tr>
       <tr>
         <td>1.1.3</td>
         <td>Ensure /var is configured</td>
-        <td><span class="pill pass">PASS</span></td>
-        <td class="detail"></td>
+        <td><span class="pill warn">WARN</span></td>
+        <td class="detail">/var is not a separate partition</td>
       </tr>
       <tr>
         <td>1.1.4</td>
         <td>Ensure /var/tmp is configured</td>
-        <td><span class="pill pass">PASS</span></td>
-        <td class="detail"></td>
+        <td><span class="pill warn">WARN</span></td>
+        <td class="detail">/var/tmp is not a separate partition</td>
       </tr>
       <tr>
         <td>1.1.5</td>
         <td>Ensure /var/log is configured</td>
-        <td><span class="pill pass">PASS</span></td>
-        <td class="detail"></td>
+        <td><span class="pill warn">WARN</span></td>
+        <td class="detail">/var/log is not a separate partition</td>
       </tr>
       <tr>
         <td>1.1.6</td>
         <td>Ensure /var/log/audit is configured</td>
-        <td><span class="pill pass">PASS</span></td>
-        <td class="detail"></td>
+        <td><span class="pill warn">WARN</span></td>
+        <td class="detail">/var/log/audit is not a separate partition</td>
       </tr>
       <tr>
         <td>1.1.7</td>
         <td>Ensure /home is configured</td>
-        <td><span class="pill pass">PASS</span></td>
-        <td class="detail"></td>
+        <td><span class="pill warn">WARN</span></td>
+        <td class="detail">/home is not a separate partition</td>
       </tr>
       <tr>
         <td>1.1.8</td>
@@ -183,116 +204,116 @@
       <tr>
         <td>1.1.9</td>
         <td>Ensure noexec option set on /tmp partition</td>
-        <td><span class="pill pass">PASS</span></td>
-        <td class="detail"></td>
+        <td><span class="pill fail">FAIL</span></td>
+        <td class="detail">/tmp missing: noexec</td>
       </tr>
       <tr>
         <td>1.1.10</td>
         <td>Ensure noexec option set on /var/tmp</td>
-        <td><span class="pill fail">FAIL</span></td>
-        <td class="detail">control not configured to CIS recommended value</td>
+        <td><span class="pill warn">WARN</span></td>
+        <td class="detail">/var/tmp is not a separate mount</td>
       </tr>
       <tr>
         <td>1.1.11</td>
         <td>Ensure nodev option set on /var/tmp</td>
-        <td><span class="pill pass">PASS</span></td>
-        <td class="detail"></td>
+        <td><span class="pill warn">WARN</span></td>
+        <td class="detail">/var/tmp is not a separate mount</td>
       </tr>
       <tr>
         <td>1.1.12</td>
         <td>Ensure nosuid option set on /var/tmp</td>
-        <td><span class="pill pass">PASS</span></td>
-        <td class="detail"></td>
+        <td><span class="pill warn">WARN</span></td>
+        <td class="detail">/var/tmp is not a separate mount</td>
       </tr>
       <tr>
         <td>1.1.13</td>
         <td>Ensure nodev option set on /home</td>
-        <td><span class="pill fail">FAIL</span></td>
-        <td class="detail">control not configured to CIS recommended value</td>
+        <td><span class="pill warn">WARN</span></td>
+        <td class="detail">/home is not a separate mount</td>
       </tr>
       <tr>
         <td>1.1.14</td>
         <td>Ensure nosuid option set on /home</td>
         <td><span class="pill warn">WARN</span></td>
-        <td class="detail">configured but value differs from recommended</td>
+        <td class="detail">/home is not a separate mount</td>
       </tr>
       <tr>
         <td>1.1.15</td>
         <td>Ensure USB storage is disabled</td>
-        <td><span class="pill pass">PASS</span></td>
-        <td class="detail"></td>
+        <td><span class="pill fail">FAIL</span></td>
+        <td class="detail">usb-storage module is not disabled</td>
       </tr>
       <tr>
         <td>1.2.1</td>
         <td>Ensure package manager repositories are configured</td>
-        <td><span class="pill warn">WARN</span></td>
-        <td class="detail">configured but value differs from recommended</td>
+        <td><span class="pill pass">PASS</span></td>
+        <td class="detail"></td>
       </tr>
       <tr>
         <td>1.2.2</td>
         <td>Ensure GPG keys are configured</td>
-        <td><span class="pill fail">FAIL</span></td>
-        <td class="detail">control not configured to CIS recommended value</td>
+        <td><span class="pill pass">PASS</span></td>
+        <td class="detail"></td>
       </tr>
       <tr>
         <td>1.3.1</td>
         <td>Ensure AIDE is installed</td>
-        <td><span class="pill pass">PASS</span></td>
-        <td class="detail"></td>
+        <td><span class="pill fail">FAIL</span></td>
+        <td class="detail">check error: [Errno 2] No such file or directory: &#x27;rpm&#x27;</td>
       </tr>
       <tr>
         <td>1.3.2</td>
         <td>Ensure filesystem integrity is regularly checked</td>
-        <td><span class="pill pass">PASS</span></td>
-        <td class="detail"></td>
+        <td><span class="pill warn">WARN</span></td>
+        <td class="detail">no periodic AIDE check scheduled</td>
       </tr>
       <tr>
         <td>1.4.1</td>
         <td>Ensure core dumps are restricted</td>
-        <td><span class="pill fail">SKIP</span></td>
-        <td class="detail">not applicable on this distro family</td>
+        <td><span class="pill fail">FAIL</span></td>
+        <td class="detail">no &#x27;hard core 0&#x27; in limits.conf</td>
       </tr>
       <tr>
         <td>1.4.2</td>
         <td>Ensure bootloader password is set</td>
-        <td><span class="pill pass">PASS</span></td>
-        <td class="detail"></td>
+        <td><span class="pill warn">WARN</span></td>
+        <td class="detail">grub.cfg not found</td>
       </tr>
       <tr>
         <td>1.4.3</td>
         <td>Ensure permissions on bootloader config are configured</td>
-        <td><span class="pill pass">PASS</span></td>
-        <td class="detail"></td>
+        <td><span class="pill warn">WARN</span></td>
+        <td class="detail">grub.cfg not found</td>
       </tr>
       <tr>
         <td>1.4.4</td>
         <td>Ensure authentication required for single user mode</td>
-        <td><span class="pill pass">PASS</span></td>
-        <td class="detail"></td>
+        <td><span class="pill fail">FAIL</span></td>
+        <td class="detail">root has no password (single-user mode would drop to a root shell with no challenge). Set one with `sudo passwd root` — or lock the account and rely on sulogin by editing /usr/lib/systemd/system/rescue.service to `ExecStart=-/usr/lib/systemd/systemd-sulogin-shell rescue`.</td>
       </tr>
       <tr>
         <td>1.5.1</td>
         <td>Ensure address space layout randomization (ASLR) is enabled</td>
-        <td><span class="pill warn">WARN</span></td>
-        <td class="detail">configured but value differs from recommended</td>
+        <td><span class="pill pass">PASS</span></td>
+        <td class="detail"></td>
       </tr>
       <tr>
         <td>1.5.2</td>
         <td>Ensure ptrace_scope is restricted</td>
         <td><span class="pill fail">FAIL</span></td>
-        <td class="detail">control not configured to CIS recommended value</td>
+        <td class="detail">ptrace_scope=0, recommended: ≥ 1</td>
       </tr>
       <tr>
         <td>1.5.3</td>
         <td>Ensure access to dmesg is restricted</td>
-        <td><span class="pill warn">WARN</span></td>
-        <td class="detail">configured but value differs from recommended</td>
+        <td><span class="pill pass">PASS</span></td>
+        <td class="detail"></td>
       </tr>
       <tr>
         <td>1.5.4</td>
         <td>Ensure kernel pointer addresses are restricted</td>
         <td><span class="pill fail">FAIL</span></td>
-        <td class="detail">control not configured to CIS recommended value</td>
+        <td class="detail">kptr_restrict=0, recommended: 1 or 2</td>
       </tr>
       <tr>
         <td>1.5.5</td>
@@ -303,50 +324,50 @@
       <tr>
         <td>1.5.6</td>
         <td>Ensure perf_event_paranoid is restrictive</td>
-        <td><span class="pill fail">SKIP</span></td>
-        <td class="detail">not applicable on this distro family</td>
-      </tr>
-      <tr>
-        <td>1.5.7</td>
-        <td>Ensure unprivileged user namespaces are restricted</td>
         <td><span class="pill pass">PASS</span></td>
         <td class="detail"></td>
       </tr>
       <tr>
+        <td>1.5.7</td>
+        <td>Ensure unprivileged user namespaces are restricted</td>
+        <td><span class="pill fail">FAIL</span></td>
+        <td class="detail">unprivileged_userns_clone=1, recommended: 0</td>
+      </tr>
+      <tr>
         <td>1.6.1</td>
         <td>Ensure AppArmor is installed</td>
-        <td><span class="pill fail">FAIL</span></td>
-        <td class="detail">control not configured to CIS recommended value</td>
+        <td><span class="pill pass">PASS</span></td>
+        <td class="detail"></td>
       </tr>
       <tr>
         <td>1.6.2</td>
         <td>Ensure AppArmor is enabled in the bootloader configuration</td>
-        <td><span class="pill warn">WARN</span></td>
-        <td class="detail">configured but value differs from recommended</td>
+        <td><span class="pill pass">PASS</span></td>
+        <td class="detail"></td>
       </tr>
       <tr>
         <td>1.6.3</td>
         <td>Ensure all AppArmor profiles are in enforce or complain mode</td>
-        <td><span class="pill fail">FAIL</span></td>
-        <td class="detail">control not configured to CIS recommended value</td>
+        <td><span class="pill warn">WARN</span></td>
+        <td class="detail">aa-status failed — is AppArmor enabled?</td>
       </tr>
       <tr>
         <td>1.7.1</td>
         <td>Ensure message of the day is configured properly</td>
-        <td><span class="pill warn">WARN</span></td>
-        <td class="detail">configured but value differs from recommended</td>
+        <td><span class="pill fail">FAIL</span></td>
+        <td class="detail">/etc/motd contains OS information</td>
       </tr>
       <tr>
         <td>1.7.2</td>
         <td>Ensure local login warning banner is configured properly</td>
         <td><span class="pill fail">FAIL</span></td>
-        <td class="detail">control not configured to CIS recommended value</td>
+        <td class="detail">/etc/issue contains OS information</td>
       </tr>
       <tr>
         <td>1.7.3</td>
         <td>Ensure remote login warning banner is configured properly</td>
         <td><span class="pill fail">FAIL</span></td>
-        <td class="detail">control not configured to CIS recommended value</td>
+        <td class="detail">/etc/issue.net contains OS information</td>
       </tr>
       <tr>
         <td>1.7.4</td>
@@ -369,50 +390,50 @@
       <tr>
         <td>1.8.1</td>
         <td>Ensure GDM is removed or login is configured (server profile)</td>
-        <td><span class="pill pass">PASS</span></td>
-        <td class="detail"></td>
+        <td><span class="pill fail">FAIL</span></td>
+        <td class="detail">check error: [Errno 2] No such file or directory: &#x27;rpm&#x27;</td>
       </tr>
       <tr>
         <td>1.8.2</td>
         <td>Ensure GDM login banner is configured</td>
-        <td><span class="pill pass">PASS</span></td>
-        <td class="detail"></td>
+        <td><span class="pill fail">FAIL</span></td>
+        <td class="detail">check error: [Errno 2] No such file or directory: &#x27;rpm&#x27;</td>
       </tr>
       <tr>
         <td>1.8.3</td>
         <td>Ensure GDM disable-user-list option is enabled</td>
-        <td><span class="pill pass">PASS</span></td>
-        <td class="detail"></td>
+        <td><span class="pill fail">FAIL</span></td>
+        <td class="detail">check error: [Errno 2] No such file or directory: &#x27;rpm&#x27;</td>
       </tr>
       <tr>
         <td>1.8.4</td>
         <td>Ensure GDM screen locks when the user is idle</td>
-        <td><span class="pill pass">PASS</span></td>
-        <td class="detail"></td>
+        <td><span class="pill fail">FAIL</span></td>
+        <td class="detail">check error: [Errno 2] No such file or directory: &#x27;rpm&#x27;</td>
       </tr>
       <tr>
         <td>1.8.5</td>
         <td>Ensure GDM screen locks cannot be overridden</td>
         <td><span class="pill fail">FAIL</span></td>
-        <td class="detail">control not configured to CIS recommended value</td>
+        <td class="detail">check error: [Errno 2] No such file or directory: &#x27;rpm&#x27;</td>
       </tr>
       <tr>
         <td>1.8.6</td>
         <td>Ensure GDM automatic mounting of removable media is disabled</td>
-        <td><span class="pill pass">PASS</span></td>
-        <td class="detail"></td>
+        <td><span class="pill fail">FAIL</span></td>
+        <td class="detail">check error: [Errno 2] No such file or directory: &#x27;rpm&#x27;</td>
       </tr>
       <tr>
         <td>1.8.7</td>
         <td>Ensure GDM disabling automatic mounting cannot be overridden</td>
-        <td><span class="pill pass">PASS</span></td>
-        <td class="detail"></td>
+        <td><span class="pill fail">FAIL</span></td>
+        <td class="detail">check error: [Errno 2] No such file or directory: &#x27;rpm&#x27;</td>
       </tr>
       <tr>
         <td>1.8.8</td>
         <td>Ensure GDM autorun-never is enabled</td>
-        <td><span class="pill pass">PASS</span></td>
-        <td class="detail"></td>
+        <td><span class="pill fail">FAIL</span></td>
+        <td class="detail">check error: [Errno 2] No such file or directory: &#x27;rpm&#x27;</td>
       </tr>
       <tr>
         <td>1.9</td>
@@ -423,32 +444,32 @@
       <tr>
         <td>2.1.1</td>
         <td>Ensure time synchronization is in use</td>
-        <td><span class="pill warn">WARN</span></td>
-        <td class="detail">configured but value differs from recommended</td>
+        <td><span class="pill fail">FAIL</span></td>
+        <td class="detail">no time synchronization service running</td>
       </tr>
       <tr>
         <td>2.1.2</td>
         <td>Ensure chrony is configured</td>
-        <td><span class="pill fail">FAIL</span></td>
-        <td class="detail">control not configured to CIS recommended value</td>
+        <td><span class="pill pass">PASS</span></td>
+        <td class="detail">chrony not in use</td>
       </tr>
       <tr>
         <td>2.2.2</td>
         <td>Ensure Avahi Server is not installed</td>
         <td><span class="pill fail">FAIL</span></td>
-        <td class="detail">control not configured to CIS recommended value</td>
+        <td class="detail">avahi-daemon is active</td>
       </tr>
       <tr>
         <td>2.2.3</td>
         <td>Ensure CUPS is not installed</td>
-        <td><span class="pill pass">PASS</span></td>
-        <td class="detail"></td>
+        <td><span class="pill fail">FAIL</span></td>
+        <td class="detail">cups is active</td>
       </tr>
       <tr>
         <td>2.2.4</td>
         <td>Ensure DHCP Server is not installed</td>
-        <td><span class="pill fail">FAIL</span></td>
-        <td class="detail">control not configured to CIS recommended value</td>
+        <td><span class="pill pass">PASS</span></td>
+        <td class="detail"></td>
       </tr>
       <tr>
         <td>2.2.5</td>
@@ -465,38 +486,38 @@
       <tr>
         <td>2.2.7</td>
         <td>Ensure DNS server is not installed</td>
-        <td><span class="pill fail">SKIP</span></td>
-        <td class="detail">not applicable on this distro family</td>
+        <td><span class="pill pass">PASS</span></td>
+        <td class="detail"></td>
       </tr>
       <tr>
         <td>2.2.8</td>
         <td>Ensure FTP server is not installed</td>
-        <td><span class="pill fail">FAIL</span></td>
-        <td class="detail">control not configured to CIS recommended value</td>
+        <td><span class="pill pass">PASS</span></td>
+        <td class="detail"></td>
       </tr>
       <tr>
         <td>2.2.9</td>
         <td>Ensure HTTP server is not installed</td>
-        <td><span class="pill fail">FAIL</span></td>
-        <td class="detail">control not configured to CIS recommended value</td>
+        <td><span class="pill pass">PASS</span></td>
+        <td class="detail"></td>
       </tr>
       <tr>
         <td>2.2.10</td>
         <td>Ensure IMAP and POP3 server is not installed</td>
-        <td><span class="pill fail">FAIL</span></td>
-        <td class="detail">control not configured to CIS recommended value</td>
+        <td><span class="pill pass">PASS</span></td>
+        <td class="detail"></td>
       </tr>
       <tr>
         <td>2.2.11</td>
         <td>Ensure Samba is not installed</td>
-        <td><span class="pill warn">WARN</span></td>
-        <td class="detail">configured but value differs from recommended</td>
+        <td><span class="pill pass">PASS</span></td>
+        <td class="detail"></td>
       </tr>
       <tr>
         <td>2.2.12</td>
         <td>Ensure HTTP Proxy server is not installed</td>
-        <td><span class="pill fail">FAIL</span></td>
-        <td class="detail">control not configured to CIS recommended value</td>
+        <td><span class="pill pass">PASS</span></td>
+        <td class="detail"></td>
       </tr>
       <tr>
         <td>2.2.13</td>
@@ -525,50 +546,50 @@
       <tr>
         <td>2.3.1</td>
         <td>Ensure NIS Client is not installed</td>
-        <td><span class="pill pass">PASS</span></td>
-        <td class="detail"></td>
+        <td><span class="pill fail">FAIL</span></td>
+        <td class="detail">check error: [Errno 2] No such file or directory: &#x27;rpm&#x27;</td>
       </tr>
       <tr>
         <td>2.3.2</td>
         <td>Ensure rsh client is not installed</td>
-        <td><span class="pill warn">WARN</span></td>
-        <td class="detail">configured but value differs from recommended</td>
+        <td><span class="pill fail">FAIL</span></td>
+        <td class="detail">check error: [Errno 2] No such file or directory: &#x27;rpm&#x27;</td>
       </tr>
       <tr>
         <td>2.3.3</td>
         <td>Ensure talk client is not installed</td>
-        <td><span class="pill warn">WARN</span></td>
-        <td class="detail">configured but value differs from recommended</td>
+        <td><span class="pill fail">FAIL</span></td>
+        <td class="detail">check error: [Errno 2] No such file or directory: &#x27;rpm&#x27;</td>
       </tr>
       <tr>
         <td>2.3.4</td>
         <td>Ensure telnet client is not installed</td>
-        <td><span class="pill pass">PASS</span></td>
-        <td class="detail"></td>
+        <td><span class="pill fail">FAIL</span></td>
+        <td class="detail">check error: [Errno 2] No such file or directory: &#x27;rpm&#x27;</td>
       </tr>
       <tr>
         <td>2.3.5</td>
         <td>Ensure LDAP client is not installed</td>
         <td><span class="pill fail">FAIL</span></td>
-        <td class="detail">control not configured to CIS recommended value</td>
+        <td class="detail">check error: [Errno 2] No such file or directory: &#x27;rpm&#x27;</td>
       </tr>
       <tr>
         <td>2.4</td>
         <td>Ensure nonessential services are removed or masked</td>
-        <td><span class="pill pass">PASS</span></td>
-        <td class="detail"></td>
+        <td><span class="pill warn">WARN</span></td>
+        <td class="detail">4 listening TCP service(s) on port(s) 25,631 — review with `ss -tlnp` and remove/mask any that aren&#x27;t required</td>
       </tr>
       <tr>
         <td>3.1.1</td>
         <td>Ensure IP forwarding is disabled</td>
-        <td><span class="pill warn">WARN</span></td>
-        <td class="detail">configured but value differs from recommended</td>
+        <td><span class="pill pass">PASS</span></td>
+        <td class="detail"></td>
       </tr>
       <tr>
         <td>3.1.2</td>
         <td>Ensure packet redirect sending is disabled</td>
-        <td><span class="pill pass">PASS</span></td>
-        <td class="detail"></td>
+        <td><span class="pill fail">FAIL</span></td>
+        <td class="detail">net.ipv4.conf.all.send_redirects=1</td>
       </tr>
       <tr>
         <td>3.2.1</td>
@@ -579,32 +600,32 @@
       <tr>
         <td>3.3.1</td>
         <td>Ensure source routed packets are not accepted</td>
-        <td><span class="pill pass">PASS</span></td>
-        <td class="detail"></td>
+        <td><span class="pill fail">FAIL</span></td>
+        <td class="detail">net.ipv4.conf.default.accept_source_route=1</td>
       </tr>
       <tr>
         <td>3.3.2</td>
         <td>Ensure ICMP redirects are not accepted</td>
-        <td><span class="pill fail">FAIL</span></td>
-        <td class="detail">control not configured to CIS recommended value</td>
+        <td><span class="pill pass">PASS</span></td>
+        <td class="detail"></td>
       </tr>
       <tr>
         <td>3.3.3</td>
         <td>Ensure secure ICMP redirects are not accepted</td>
-        <td><span class="pill pass">PASS</span></td>
-        <td class="detail"></td>
+        <td><span class="pill fail">FAIL</span></td>
+        <td class="detail">net.ipv4.conf.all.secure_redirects=1</td>
       </tr>
       <tr>
         <td>3.3.4</td>
         <td>Ensure suspicious packets are logged</td>
         <td><span class="pill fail">FAIL</span></td>
-        <td class="detail">control not configured to CIS recommended value</td>
+        <td class="detail">net.ipv4.conf.all.log_martians=0</td>
       </tr>
       <tr>
         <td>3.3.5</td>
         <td>Ensure broadcast ICMP requests are ignored</td>
-        <td><span class="pill warn">WARN</span></td>
-        <td class="detail">configured but value differs from recommended</td>
+        <td><span class="pill pass">PASS</span></td>
+        <td class="detail"></td>
       </tr>
       <tr>
         <td>3.3.6</td>
@@ -615,50 +636,50 @@
       <tr>
         <td>3.3.7</td>
         <td>Ensure Reverse Path Filtering is enabled</td>
-        <td><span class="pill pass">PASS</span></td>
-        <td class="detail"></td>
+        <td><span class="pill fail">FAIL</span></td>
+        <td class="detail">net.ipv4.conf.all.rp_filter=0</td>
       </tr>
       <tr>
         <td>3.3.8</td>
         <td>Ensure TCP SYN Cookies is enabled</td>
-        <td><span class="pill fail">SKIP</span></td>
-        <td class="detail">not applicable on this distro family</td>
+        <td><span class="pill pass">PASS</span></td>
+        <td class="detail"></td>
       </tr>
       <tr>
         <td>3.3.9</td>
         <td>Ensure IPv6 router advertisements are not accepted</td>
-        <td><span class="pill pass">PASS</span></td>
-        <td class="detail"></td>
+        <td><span class="pill fail">FAIL</span></td>
+        <td class="detail">net.ipv6.conf.all.accept_ra=1</td>
       </tr>
       <tr>
         <td>3.4.1</td>
         <td>Ensure DCCP is disabled</td>
-        <td><span class="pill pass">PASS</span></td>
-        <td class="detail"></td>
+        <td><span class="pill fail">FAIL</span></td>
+        <td class="detail">dccp is not disabled</td>
       </tr>
       <tr>
         <td>3.4.2</td>
         <td>Ensure SCTP is disabled</td>
-        <td><span class="pill pass">PASS</span></td>
-        <td class="detail"></td>
+        <td><span class="pill fail">FAIL</span></td>
+        <td class="detail">sctp is not disabled</td>
       </tr>
       <tr>
         <td>3.4.3</td>
         <td>Ensure RDS is disabled</td>
-        <td><span class="pill pass">PASS</span></td>
-        <td class="detail"></td>
+        <td><span class="pill fail">FAIL</span></td>
+        <td class="detail">rds is not disabled</td>
       </tr>
       <tr>
         <td>3.4.4</td>
         <td>Ensure TIPC is disabled</td>
         <td><span class="pill fail">FAIL</span></td>
-        <td class="detail">control not configured to CIS recommended value</td>
+        <td class="detail">tipc is not disabled</td>
       </tr>
       <tr>
         <td>3.5.1.1</td>
         <td>Ensure iptables is installed</td>
-        <td><span class="pill fail">FAIL</span></td>
-        <td class="detail">control not configured to CIS recommended value</td>
+        <td><span class="pill pass">PASS</span></td>
+        <td class="detail"></td>
       </tr>
       <tr>
         <td>3.5.1.2</td>
@@ -681,26 +702,26 @@
       <tr>
         <td>3.5.2.3</td>
         <td>Ensure iptables outbound and established connections are configured</td>
-        <td><span class="pill fail">SKIP</span></td>
-        <td class="detail">not applicable on this distro family</td>
-      </tr>
-      <tr>
-        <td>3.5.2.4</td>
-        <td>Ensure iptables firewall rules exist for all open ports</td>
         <td><span class="pill pass">PASS</span></td>
         <td class="detail"></td>
       </tr>
       <tr>
+        <td>3.5.2.4</td>
+        <td>Ensure iptables firewall rules exist for all open ports</td>
+        <td><span class="pill warn">WARN</span></td>
+        <td class="detail">ports without explicit rules: 631</td>
+      </tr>
+      <tr>
         <td>3.5.3.1</td>
         <td>Ensure ip6tables default deny firewall policy</td>
-        <td><span class="pill fail">SKIP</span></td>
-        <td class="detail">not applicable on this distro family</td>
+        <td><span class="pill pass">PASS</span></td>
+        <td class="detail"></td>
       </tr>
       <tr>
         <td>3.5.3.2</td>
         <td>Ensure ip6tables loopback traffic is configured</td>
-        <td><span class="pill warn">WARN</span></td>
-        <td class="detail">configured but value differs from recommended</td>
+        <td><span class="pill fail">FAIL</span></td>
+        <td class="detail">ip6tables loopback INPUT ACCEPT not found</td>
       </tr>
       <tr>
         <td>3.5.3.3</td>
@@ -712,355 +733,355 @@
         <td>3.5.4</td>
         <td>Ensure iptables rules are saved</td>
         <td><span class="pill fail">FAIL</span></td>
-        <td class="detail">control not configured to CIS recommended value</td>
+        <td class="detail">check error: [Errno 2] No such file or directory: &#x27;rpm&#x27;</td>
       </tr>
       <tr>
         <td>3.5.5</td>
         <td>Ensure unused network interfaces are disabled</td>
-        <td><span class="pill fail">FAIL</span></td>
-        <td class="detail">control not configured to CIS recommended value</td>
+        <td><span class="pill pass">PASS</span></td>
+        <td class="detail">1 interface(s) up</td>
       </tr>
       <tr>
         <td>3.6</td>
         <td>Ensure wireless interfaces are disabled</td>
-        <td><span class="pill pass">PASS</span></td>
-        <td class="detail"></td>
+        <td><span class="pill warn">WARN</span></td>
+        <td class="detail">wireless interfaces up: wlp1s0</td>
       </tr>
       <tr>
         <td>4.1.1.1</td>
         <td>Ensure auditd is installed</td>
-        <td><span class="pill pass">PASS</span></td>
-        <td class="detail"></td>
+        <td><span class="pill fail">FAIL</span></td>
+        <td class="detail">check error: [Errno 2] No such file or directory: &#x27;rpm&#x27;</td>
       </tr>
       <tr>
         <td>4.1.1.2</td>
         <td>Ensure auditd service is enabled and running</td>
         <td><span class="pill fail">FAIL</span></td>
-        <td class="detail">control not configured to CIS recommended value</td>
+        <td class="detail">auditd is not enabled</td>
       </tr>
       <tr>
         <td>4.1.1.3</td>
         <td>Ensure audit log storage size is configured</td>
-        <td><span class="pill pass">PASS</span></td>
-        <td class="detail"></td>
+        <td><span class="pill warn">WARN</span></td>
+        <td class="detail">auditd.conf not found</td>
       </tr>
       <tr>
         <td>4.1.1.4</td>
         <td>Ensure audit logs are not automatically deleted</td>
-        <td><span class="pill pass">PASS</span></td>
-        <td class="detail"></td>
+        <td><span class="pill warn">WARN</span></td>
+        <td class="detail">auditd.conf not found</td>
       </tr>
       <tr>
         <td>4.1.2</td>
         <td>Ensure audit backlog limit is sufficient</td>
-        <td><span class="pill pass">PASS</span></td>
-        <td class="detail"></td>
+        <td><span class="pill warn">WARN</span></td>
+        <td class="detail">audit_backlog_limit not set in /proc/cmdline. Add audit_backlog_limit=8192 to GRUB_CMDLINE_LINUX in /etc/default/grub, then run update-grub and reboot.</td>
       </tr>
       <tr>
         <td>4.1.3</td>
         <td>Ensure events that modify date and time information are collected</td>
-        <td><span class="pill fail">SKIP</span></td>
-        <td class="detail">not applicable on this distro family</td>
+        <td><span class="pill fail">FAIL</span></td>
+        <td class="detail">no audit rules for time-change</td>
       </tr>
       <tr>
         <td>4.1.4</td>
         <td>Ensure events that modify user/group information are collected</td>
-        <td><span class="pill warn">WARN</span></td>
-        <td class="detail">configured but value differs from recommended</td>
+        <td><span class="pill fail">FAIL</span></td>
+        <td class="detail">no audit rules for identity</td>
       </tr>
       <tr>
         <td>4.1.5</td>
         <td>Ensure events that modify the system&#x27;s network environment are collected</td>
-        <td><span class="pill pass">PASS</span></td>
-        <td class="detail"></td>
+        <td><span class="pill fail">FAIL</span></td>
+        <td class="detail">no audit rules for system-locale</td>
       </tr>
       <tr>
         <td>4.1.6</td>
         <td>Ensure events that modify the system&#x27;s Mandatory Access Controls are collected</td>
-        <td><span class="pill pass">PASS</span></td>
-        <td class="detail"></td>
+        <td><span class="pill fail">FAIL</span></td>
+        <td class="detail">no audit rules for MAC-policy</td>
       </tr>
       <tr>
         <td>4.1.7</td>
         <td>Ensure login and logout events are collected</td>
-        <td><span class="pill pass">PASS</span></td>
-        <td class="detail"></td>
+        <td><span class="pill fail">FAIL</span></td>
+        <td class="detail">no audit rules for logins</td>
       </tr>
       <tr>
         <td>4.1.8</td>
         <td>Ensure session initiation information is collected</td>
-        <td><span class="pill warn">WARN</span></td>
-        <td class="detail">configured but value differs from recommended</td>
+        <td><span class="pill fail">FAIL</span></td>
+        <td class="detail">no audit rules for session</td>
       </tr>
       <tr>
         <td>4.1.9</td>
         <td>Ensure discretionary access control permission modification events are collected</td>
-        <td><span class="pill warn">WARN</span></td>
-        <td class="detail">configured but value differs from recommended</td>
+        <td><span class="pill fail">FAIL</span></td>
+        <td class="detail">no audit rules for perm_mod</td>
       </tr>
       <tr>
         <td>4.1.10</td>
         <td>Ensure unsuccessful unauthorized file access attempts are collected</td>
-        <td><span class="pill pass">PASS</span></td>
-        <td class="detail"></td>
+        <td><span class="pill fail">FAIL</span></td>
+        <td class="detail">no audit rules for access</td>
       </tr>
       <tr>
         <td>4.1.11</td>
         <td>Ensure file deletion events by users are collected</td>
         <td><span class="pill fail">FAIL</span></td>
-        <td class="detail">control not configured to CIS recommended value</td>
+        <td class="detail">no audit rules for delete</td>
       </tr>
       <tr>
         <td>4.1.12</td>
         <td>Ensure changes to system administration scope (sudoers) are collected</td>
         <td><span class="pill fail">FAIL</span></td>
-        <td class="detail">control not configured to CIS recommended value</td>
+        <td class="detail">no audit rules for scope</td>
       </tr>
       <tr>
         <td>4.1.13</td>
         <td>Ensure system administrator command executions (sudo) are collected</td>
-        <td><span class="pill pass">PASS</span></td>
-        <td class="detail"></td>
+        <td><span class="pill fail">FAIL</span></td>
+        <td class="detail">no audit rules for actions</td>
       </tr>
       <tr>
         <td>4.1.14</td>
         <td>Ensure kernel module loading and unloading is collected</td>
         <td><span class="pill fail">FAIL</span></td>
-        <td class="detail">control not configured to CIS recommended value</td>
+        <td class="detail">no audit rules for modules</td>
       </tr>
       <tr>
         <td>4.1.15</td>
         <td>Ensure file system mounts are collected</td>
-        <td><span class="pill pass">PASS</span></td>
-        <td class="detail"></td>
+        <td><span class="pill fail">FAIL</span></td>
+        <td class="detail">no audit rules for mounts</td>
       </tr>
       <tr>
         <td>4.1.16</td>
         <td>Ensure the audit configuration is immutable</td>
-        <td><span class="pill fail">FAIL</span></td>
-        <td class="detail">control not configured to CIS recommended value</td>
+        <td><span class="pill warn">WARN</span></td>
+        <td class="detail">immutable flag persisted but not active — reboot required</td>
       </tr>
       <tr>
         <td>4.2.1.1</td>
         <td>Ensure journald is configured to write to persistent storage</td>
         <td><span class="pill pass">PASS</span></td>
-        <td class="detail"></td>
+        <td class="detail">persistent by default</td>
       </tr>
       <tr>
         <td>4.2.1.2</td>
         <td>Ensure journald is configured to compress large log files</td>
         <td><span class="pill pass">PASS</span></td>
-        <td class="detail"></td>
+        <td class="detail">default is yes</td>
       </tr>
       <tr>
         <td>4.2.2.1</td>
         <td>Ensure rsyslog is installed</td>
-        <td><span class="pill pass">PASS</span></td>
-        <td class="detail"></td>
+        <td><span class="pill fail">FAIL</span></td>
+        <td class="detail">check error: [Errno 2] No such file or directory: &#x27;rpm&#x27;</td>
       </tr>
       <tr>
         <td>4.2.3</td>
         <td>Ensure permissions on all logfiles are configured</td>
-        <td><span class="pill pass">PASS</span></td>
-        <td class="detail"></td>
+        <td><span class="pill warn">WARN</span></td>
+        <td class="detail">9 log files in /var/log are world-accessible</td>
       </tr>
       <tr>
         <td>5.1.1</td>
         <td>Ensure cron daemon is enabled and running</td>
-        <td><span class="pill warn">WARN</span></td>
-        <td class="detail">configured but value differs from recommended</td>
+        <td><span class="pill pass">PASS</span></td>
+        <td class="detail"></td>
       </tr>
       <tr>
         <td>5.1.2</td>
         <td>Ensure permissions on /etc/crontab are configured</td>
-        <td><span class="pill warn">WARN</span></td>
-        <td class="detail">configured but value differs from recommended</td>
+        <td><span class="pill fail">FAIL</span></td>
+        <td class="detail">mode=0o644, expected: 0o600 or stricter</td>
       </tr>
       <tr>
         <td>5.1.3</td>
         <td>Ensure permissions on /etc/cron.hourly are configured</td>
-        <td><span class="pill warn">WARN</span></td>
-        <td class="detail">configured but value differs from recommended</td>
+        <td><span class="pill fail">FAIL</span></td>
+        <td class="detail">mode=0o755, expected: 0o700 or stricter</td>
       </tr>
       <tr>
         <td>5.1.4</td>
         <td>Ensure permissions on /etc/cron.daily are configured</td>
-        <td><span class="pill pass">PASS</span></td>
-        <td class="detail"></td>
+        <td><span class="pill fail">FAIL</span></td>
+        <td class="detail">mode=0o755, expected: 0o700 or stricter</td>
       </tr>
       <tr>
         <td>5.1.5</td>
         <td>Ensure permissions on /etc/cron.weekly are configured</td>
-        <td><span class="pill pass">PASS</span></td>
-        <td class="detail"></td>
+        <td><span class="pill fail">FAIL</span></td>
+        <td class="detail">mode=0o755, expected: 0o700 or stricter</td>
       </tr>
       <tr>
         <td>5.1.6</td>
         <td>Ensure permissions on /etc/cron.monthly are configured</td>
-        <td><span class="pill warn">WARN</span></td>
-        <td class="detail">configured but value differs from recommended</td>
+        <td><span class="pill fail">FAIL</span></td>
+        <td class="detail">mode=0o755, expected: 0o700 or stricter</td>
       </tr>
       <tr>
         <td>5.1.7</td>
         <td>Ensure permissions on /etc/cron.d are configured</td>
-        <td><span class="pill warn">WARN</span></td>
-        <td class="detail">configured but value differs from recommended</td>
+        <td><span class="pill fail">FAIL</span></td>
+        <td class="detail">mode=0o755, expected: 0o700 or stricter</td>
       </tr>
       <tr>
         <td>5.1.8</td>
         <td>Ensure cron is restricted to authorized users</td>
-        <td><span class="pill pass">PASS</span></td>
-        <td class="detail"></td>
+        <td><span class="pill fail">FAIL</span></td>
+        <td class="detail">/etc/cron.allow does not exist</td>
       </tr>
       <tr>
         <td>5.1.9</td>
         <td>Ensure at is restricted to authorized users</td>
         <td><span class="pill pass">PASS</span></td>
-        <td class="detail"></td>
+        <td class="detail">at not installed</td>
       </tr>
       <tr>
         <td>5.2.1</td>
         <td>Ensure permissions on /etc/ssh/sshd_config are configured</td>
-        <td><span class="pill pass">PASS</span></td>
-        <td class="detail"></td>
+        <td><span class="pill warn">WARN</span></td>
+        <td class="detail">sshd_config not found</td>
       </tr>
       <tr>
         <td>5.2.2</td>
         <td>Ensure SSH LogLevel is appropriate</td>
-        <td><span class="pill fail">FAIL</span></td>
-        <td class="detail">control not configured to CIS recommended value</td>
+        <td><span class="pill warn">WARN</span></td>
+        <td class="detail">could not read sshd config</td>
       </tr>
       <tr>
         <td>5.2.3</td>
         <td>Ensure SSH MaxStartups is configured</td>
-        <td><span class="pill fail">FAIL</span></td>
-        <td class="detail">control not configured to CIS recommended value</td>
+        <td><span class="pill warn">WARN</span></td>
+        <td class="detail">could not read sshd config</td>
       </tr>
       <tr>
         <td>5.2.4</td>
         <td>Ensure SSH X11 forwarding is disabled</td>
-        <td><span class="pill pass">PASS</span></td>
-        <td class="detail"></td>
+        <td><span class="pill warn">WARN</span></td>
+        <td class="detail">could not read sshd config</td>
       </tr>
       <tr>
         <td>5.2.5</td>
         <td>Ensure SSH MaxAuthTries is set to 4 or less</td>
-        <td><span class="pill pass">PASS</span></td>
-        <td class="detail"></td>
+        <td><span class="pill warn">WARN</span></td>
+        <td class="detail">could not read sshd config</td>
       </tr>
       <tr>
         <td>5.2.6</td>
         <td>Ensure SSH IgnoreRhosts is enabled</td>
-        <td><span class="pill pass">PASS</span></td>
-        <td class="detail"></td>
+        <td><span class="pill warn">WARN</span></td>
+        <td class="detail">could not read sshd config</td>
       </tr>
       <tr>
         <td>5.2.7</td>
         <td>Ensure SSH HostbasedAuthentication is disabled</td>
-        <td><span class="pill pass">PASS</span></td>
-        <td class="detail"></td>
+        <td><span class="pill warn">WARN</span></td>
+        <td class="detail">could not read sshd config</td>
       </tr>
       <tr>
         <td>5.2.8</td>
         <td>Ensure SSH PermitEmptyPasswords is disabled</td>
         <td><span class="pill warn">WARN</span></td>
-        <td class="detail">configured but value differs from recommended</td>
+        <td class="detail">could not read sshd config</td>
       </tr>
       <tr>
         <td>5.2.9</td>
         <td>Ensure SSH PermitUserEnvironment is disabled</td>
-        <td><span class="pill pass">PASS</span></td>
-        <td class="detail"></td>
+        <td><span class="pill warn">WARN</span></td>
+        <td class="detail">could not read sshd config</td>
       </tr>
       <tr>
         <td>5.2.10</td>
         <td>Ensure SSH UsePAM is enabled</td>
-        <td><span class="pill pass">PASS</span></td>
-        <td class="detail"></td>
+        <td><span class="pill warn">WARN</span></td>
+        <td class="detail">could not read sshd config</td>
       </tr>
       <tr>
         <td>5.2.11</td>
         <td>Ensure SSH root login is disabled</td>
-        <td><span class="pill pass">PASS</span></td>
-        <td class="detail"></td>
+        <td><span class="pill warn">WARN</span></td>
+        <td class="detail">could not read sshd config</td>
       </tr>
       <tr>
         <td>5.2.12</td>
         <td>Ensure SSH idle timeout is not disabled</td>
-        <td><span class="pill fail">FAIL</span></td>
-        <td class="detail">control not configured to CIS recommended value</td>
+        <td><span class="pill warn">WARN</span></td>
+        <td class="detail">could not read sshd config</td>
       </tr>
       <tr>
         <td>5.2.13</td>
         <td>Ensure only strong ciphers are used</td>
-        <td><span class="pill pass">PASS</span></td>
-        <td class="detail"></td>
+        <td><span class="pill warn">WARN</span></td>
+        <td class="detail">could not read sshd config</td>
       </tr>
       <tr>
         <td>5.2.14</td>
         <td>Ensure only strong MAC algorithms are used</td>
-        <td><span class="pill pass">PASS</span></td>
-        <td class="detail"></td>
+        <td><span class="pill warn">WARN</span></td>
+        <td class="detail">could not read sshd config</td>
       </tr>
       <tr>
         <td>5.2.15</td>
         <td>Ensure SSH LoginGraceTime is set to one minute or less</td>
-        <td><span class="pill fail">SKIP</span></td>
-        <td class="detail">not applicable on this distro family</td>
+        <td><span class="pill warn">WARN</span></td>
+        <td class="detail">could not read sshd config</td>
       </tr>
       <tr>
         <td>5.2.16</td>
         <td>Ensure SSH idle timeout interval is configured</td>
-        <td><span class="pill fail">FAIL</span></td>
-        <td class="detail">control not configured to CIS recommended value</td>
+        <td><span class="pill warn">WARN</span></td>
+        <td class="detail">could not read sshd config</td>
       </tr>
       <tr>
         <td>5.2.17</td>
         <td>Ensure SSH AllowTcpForwarding is disabled</td>
-        <td><span class="pill pass">PASS</span></td>
-        <td class="detail"></td>
+        <td><span class="pill warn">WARN</span></td>
+        <td class="detail">could not read sshd config</td>
       </tr>
       <tr>
         <td>5.2.18</td>
         <td>Ensure SSH warning banner is configured</td>
-        <td><span class="pill pass">PASS</span></td>
-        <td class="detail"></td>
+        <td><span class="pill warn">WARN</span></td>
+        <td class="detail">could not read sshd config</td>
       </tr>
       <tr>
         <td>5.2.19</td>
         <td>Ensure SSH MaxSessions is limited</td>
-        <td><span class="pill pass">PASS</span></td>
-        <td class="detail"></td>
+        <td><span class="pill warn">WARN</span></td>
+        <td class="detail">could not read sshd config</td>
       </tr>
       <tr>
         <td>5.2.20</td>
         <td>Ensure only strong Key Exchange algorithms are used</td>
-        <td><span class="pill pass">PASS</span></td>
-        <td class="detail"></td>
+        <td><span class="pill warn">WARN</span></td>
+        <td class="detail">could not read sshd config</td>
       </tr>
       <tr>
         <td>5.2.21</td>
         <td>Ensure SSH GatewayPorts is disabled</td>
-        <td><span class="pill pass">PASS</span></td>
-        <td class="detail"></td>
+        <td><span class="pill warn">WARN</span></td>
+        <td class="detail">could not read sshd config</td>
       </tr>
       <tr>
         <td>5.3.1</td>
         <td>Ensure password creation requirements are configured</td>
-        <td><span class="pill fail">FAIL</span></td>
-        <td class="detail">control not configured to CIS recommended value</td>
+        <td><span class="pill pass">PASS</span></td>
+        <td class="detail"></td>
       </tr>
       <tr>
         <td>5.3.2</td>
         <td>Ensure lockout for failed password attempts is configured</td>
-        <td><span class="pill pass">PASS</span></td>
-        <td class="detail"></td>
+        <td><span class="pill fail">FAIL</span></td>
+        <td class="detail">pam_faillock not active in PAM auth stack — to enable: an LSS-provided faillock pam-config profile is installed at /usr/share/pam-configs/faillock by `sudo lss harden --confirm --control 5.3.2`. Stock Debian/Ubuntu libpam-runtime does NOT ship one. After the profile is in place, run `sudo pam-auth-update --enable faillock --package` to wire it into /etc/pam.d/common-auth. On RHEL/Fedora with authselect, `sudo authselect enable-feature with-faillock` instead. Re-run lss audit to confirm; faillock.conf is already populated with the deny/unlock policy.</td>
       </tr>
       <tr>
         <td>5.3.3</td>
         <td>Ensure password reuse is limited</td>
-        <td><span class="pill pass">PASS</span></td>
-        <td class="detail"></td>
+        <td><span class="pill fail">FAIL</span></td>
+        <td class="detail">pam_pwhistory not in PAM password stack — to remediate on Debian/Ubuntu/Kali: install a pam-configs profile under /usr/share/pam-configs/ that adds `pam_pwhistory.so remember=5 use_authtok` to the Password stack with Priority &lt; 256, then run `sudo pam-auth-update --enable &lt;profile&gt; --package`. On RHEL/Fedora with authselect: `sudo authselect enable-feature with-pwhistory` (authselect 1.2+) or set `remember=N` in /etc/security/pwhistory.conf and ensure pam_pwhistory is present in /etc/pam.d/system-auth (managed by authselect).</td>
       </tr>
       <tr>
         <td>5.3.4</td>
@@ -1071,8 +1092,8 @@
       <tr>
         <td>5.3.5</td>
         <td>Ensure password hashing algorithm is SHA-512 or stronger</td>
-        <td><span class="pill fail">FAIL</span></td>
-        <td class="detail">control not configured to CIS recommended value</td>
+        <td><span class="pill pass">PASS</span></td>
+        <td class="detail"></td>
       </tr>
       <tr>
         <td>5.3.6</td>
@@ -1084,13 +1105,13 @@
         <td>5.3.7</td>
         <td>Ensure password retry is limited to 3 or fewer attempts</td>
         <td><span class="pill warn">WARN</span></td>
-        <td class="detail">configured but value differs from recommended</td>
+        <td class="detail">retry not configured in pwquality</td>
       </tr>
       <tr>
         <td>5.4.1.1</td>
         <td>Ensure password expiration is 365 days or less</td>
-        <td><span class="pill warn">WARN</span></td>
-        <td class="detail">configured but value differs from recommended</td>
+        <td><span class="pill pass">PASS</span></td>
+        <td class="detail"></td>
       </tr>
       <tr>
         <td>5.4.1.2</td>
@@ -1108,7 +1129,7 @@
         <td>5.4.1.4</td>
         <td>Ensure inactive password lock is 30 days or less</td>
         <td><span class="pill fail">FAIL</span></td>
-        <td class="detail">control not configured to CIS recommended value</td>
+        <td class="detail">INACTIVE=-1 (disabled)</td>
       </tr>
       <tr>
         <td>5.4.2</td>
@@ -1125,32 +1146,32 @@
       <tr>
         <td>5.4.4</td>
         <td>Ensure default user umask is 027 or more restrictive</td>
-        <td><span class="pill warn">WARN</span></td>
-        <td class="detail">configured but value differs from recommended</td>
+        <td><span class="pill fail">FAIL</span></td>
+        <td class="detail">UMASK=022, recommended: 027 or stricter</td>
       </tr>
       <tr>
         <td>5.4.5</td>
         <td>Ensure default user shell timeout is 900 seconds or less</td>
-        <td><span class="pill fail">FAIL</span></td>
-        <td class="detail">control not configured to CIS recommended value</td>
-      </tr>
-      <tr>
-        <td>5.6</td>
-        <td>Ensure access to the su command is restricted</td>
         <td><span class="pill pass">PASS</span></td>
         <td class="detail"></td>
       </tr>
       <tr>
+        <td>5.6</td>
+        <td>Ensure access to the su command is restricted</td>
+        <td><span class="pill fail">FAIL</span></td>
+        <td class="detail">pam_wheel.so not required in /etc/pam.d/su</td>
+      </tr>
+      <tr>
         <td>6.1.1</td>
         <td>Ensure permissions on /etc/passwd are configured</td>
-        <td><span class="pill fail">FAIL</span></td>
-        <td class="detail">control not configured to CIS recommended value</td>
+        <td><span class="pill pass">PASS</span></td>
+        <td class="detail"></td>
       </tr>
       <tr>
         <td>6.1.2</td>
         <td>Ensure permissions on /etc/passwd- are configured</td>
-        <td><span class="pill warn">WARN</span></td>
-        <td class="detail">configured but value differs from recommended</td>
+        <td><span class="pill pass">PASS</span></td>
+        <td class="detail"></td>
       </tr>
       <tr>
         <td>6.1.3</td>
@@ -1185,20 +1206,20 @@
       <tr>
         <td>6.1.8</td>
         <td>Ensure permissions on /etc/gshadow- are configured</td>
-        <td><span class="pill fail">FAIL</span></td>
-        <td class="detail">control not configured to CIS recommended value</td>
+        <td><span class="pill pass">PASS</span></td>
+        <td class="detail"></td>
       </tr>
       <tr>
         <td>6.1.9</td>
         <td>Ensure no world-writable files exist</td>
-        <td><span class="pill fail">FAIL</span></td>
-        <td class="detail">control not configured to CIS recommended value</td>
+        <td><span class="pill pass">PASS</span></td>
+        <td class="detail"></td>
       </tr>
       <tr>
         <td>6.1.10</td>
         <td>Ensure no unowned files or directories exist</td>
-        <td><span class="pill fail">SKIP</span></td>
-        <td class="detail">not applicable on this distro family</td>
+        <td><span class="pill pass">PASS</span></td>
+        <td class="detail"></td>
       </tr>
       <tr>
         <td>6.1.11</td>
@@ -1216,13 +1237,13 @@
         <td>6.1.13</td>
         <td>Audit SUID and SGID executables</td>
         <td><span class="pill pass">PASS</span></td>
-        <td class="detail"></td>
+        <td class="detail">26 SUID/SGID binaries found</td>
       </tr>
       <tr>
         <td>6.2.1</td>
         <td>Ensure root is the only UID 0 account</td>
-        <td><span class="pill warn">WARN</span></td>
-        <td class="detail">configured but value differs from recommended</td>
+        <td><span class="pill pass">PASS</span></td>
+        <td class="detail"></td>
       </tr>
       <tr>
         <td>6.2.2</td>
@@ -1263,8 +1284,8 @@
       <tr>
         <td>6.2.8</td>
         <td>Ensure root PATH integrity</td>
-        <td><span class="pill warn">WARN</span></td>
-        <td class="detail">configured but value differs from recommended</td>
+        <td><span class="pill pass">PASS</span></td>
+        <td class="detail"></td>
       </tr>
       <tr>
         <td>6.2.9</td>
@@ -1275,14 +1296,14 @@
       <tr>
         <td>6.2.10</td>
         <td>Ensure users own their home directories</td>
-        <td><span class="pill warn">WARN</span></td>
-        <td class="detail">configured but value differs from recommended</td>
+        <td><span class="pill pass">PASS</span></td>
+        <td class="detail"></td>
       </tr>
       <tr>
         <td>6.2.11</td>
         <td>Ensure users&#x27; home directory permissions are 750 or more restrictive</td>
-        <td><span class="pill fail">FAIL</span></td>
-        <td class="detail">control not configured to CIS recommended value</td>
+        <td><span class="pill pass">PASS</span></td>
+        <td class="detail"></td>
       </tr>
       <tr>
         <td>6.2.12</td>
@@ -1293,32 +1314,32 @@
       <tr>
         <td>6.2.13</td>
         <td>Ensure no users have .netrc files</td>
-        <td><span class="pill fail">SKIP</span></td>
-        <td class="detail">not applicable on this distro family</td>
+        <td><span class="pill pass">PASS</span></td>
+        <td class="detail"></td>
       </tr>
       <tr>
         <td>6.2.14</td>
         <td>Ensure no users have .rhosts files</td>
-        <td><span class="pill warn">WARN</span></td>
-        <td class="detail">configured but value differs from recommended</td>
+        <td><span class="pill pass">PASS</span></td>
+        <td class="detail"></td>
       </tr>
       <tr>
         <td>6.2.15</td>
         <td>Ensure all users have a valid shell</td>
-        <td><span class="pill fail">SKIP</span></td>
-        <td class="detail">not applicable on this distro family</td>
+        <td><span class="pill pass">PASS</span></td>
+        <td class="detail"></td>
       </tr>
       <tr>
         <td>LSS-001</td>
         <td>Ensure system-wide crypto policy is not legacy</td>
-        <td><span class="pill warn">WARN</span></td>
-        <td class="detail">configured but value differs from recommended</td>
+        <td><span class="pill skip">SKIP</span></td>
+        <td class="detail">no crypto policy file on debian family</td>
       </tr>
       <tr>
         <td>LSS-002</td>
         <td>Ensure root login is restricted to system console</td>
-        <td><span class="pill warn">WARN</span></td>
-        <td class="detail">configured but value differs from recommended</td>
+        <td><span class="pill pass">PASS</span></td>
+        <td class="detail">no /etc/securetty — PAM controls access</td>
       </tr>
       <tr>
         <td>LSS-003</td>
@@ -1326,11 +1347,23 @@
         <td><span class="pill pass">PASS</span></td>
         <td class="detail"></td>
       </tr>
+      <tr>
+        <td>LSS-004</td>
+        <td>Ensure apparmor.service is not condition-skipped on Live+persistence boots</td>
+        <td><span class="pill skip">SKIP</span></td>
+        <td class="detail">not a Debian/Kali Live + persistence system</td>
+      </tr>
+      <tr>
+        <td>LSS-005</td>
+        <td>Forensic-grade user execve auditing (beyond CIS 4.1.13)</td>
+        <td><span class="pill fail">FAIL</span></td>
+        <td class="detail">check error: [Errno 2] No such file or directory: &#x27;auditctl&#x27;</td>
+      </tr>
   </tbody>
 </table>
 
 <div class="footer">
-  Generated 2026-04-22 06:15:58 UTC by The Linux Security Suite &mdash; linuxsecuritysuite.com
+  Generated 2026-04-29 20:47:57 UTC by The Linux Security Suite
 </div>
 
 </body>

@@ -22,8 +22,21 @@ class RollbackEntry:
 
 @dataclass
 class CheckResult:
-    """Result of running a single control check."""
-    status: str        # "pass", "warn", or "fail"
+    """Result of running a single control check.
+
+    Status values:
+      pass    — control is satisfied
+      warn    — soft non-compliance the operator should review
+      fail    — non-compliant; `lss harden` will attempt to fix it
+      manual  — non-compliant AND auto-fix is intentionally not provided
+                (operator action required: see detail). Used for controls
+                where automated remediation is unsafe (PAM stack edits) or
+                requires explicit opt-in (audit log volume). Reported as a
+                separate bucket from fail so the operator can distinguish
+                "broken" from "needs me to take a step."
+      skip    — control not applicable on this system
+    """
+    status: str
     detail: str = ""   # short explanation shown in parentheses
 
 

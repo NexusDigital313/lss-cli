@@ -379,18 +379,32 @@ register(Control(
 # ---- CIS 5.4.5: Ensure default user shell timeout is configured ----
 
 def _check_shell_timeout() -> CheckResult:
-    for conf in ["/etc/profile", "/etc/profile.d/timeout.sh", "/etc/bashrc", "/etc/bash.bashrc"]:
-        p = Path(conf)
-        if p.exists():
-            text = p.read_text()
-            if "TMOUT=" in text:
-                import re
-                m = re.search(r"TMOUT=(\d+)", text)
-                if m:
-                    val = int(m.group(1))
-                    if 0 < val <= 900:
-                        return CheckResult("pass")
-                    return CheckResult("warn", f"TMOUT={val}, recommended: ≤ 900")
+    """Look for a non-commented TMOUT=<seconds> assignment in any file a login
+    shell would actually source: /etc/profile, /etc/bashrc, /etc/bash.bashrc,
+    and every /etc/profile.d/*.sh file (which login shells source in lexical
+    order). The fix writes /etc/profile.d/80-lss-timeout.sh, so the audit must
+    scan that directory or it cosmetic-fails its own fix."""
+    import re
+    files: list[Path] = [
+        Path("/etc/profile"),
+        Path("/etc/bashrc"),
+        Path("/etc/bash.bashrc"),
+    ]
+    profile_d = Path("/etc/profile.d")
+    if profile_d.is_dir():
+        files.extend(sorted(profile_d.glob("*.sh")))
+    # Anchor to start-of-line and disallow `#` before TMOUT so a commented-out
+    # assignment doesn't masquerade as a real one (cosmetic-pass class).
+    pattern = re.compile(r"^[^#\n]*\bTMOUT=(\d+)", re.MULTILINE)
+    for p in files:
+        if not p.exists():
+            continue
+        m = pattern.search(p.read_text())
+        if m:
+            val = int(m.group(1))
+            if 0 < val <= 900:
+                return CheckResult("pass")
+            return CheckResult("warn", f"TMOUT={val}, recommended: ≤ 900")
     return CheckResult("fail", "TMOUT not set — no shell idle timeout")
 
 
@@ -523,7 +537,7 @@ register(Control(
     title="Ensure apparmor.service is not condition-skipped on Live+persistence boots",
     section="kernel",
     check=_check_apparmor_live_condition,
-    fix=None,  # Audit-only in v0.5; auto-fix planned for v0.5.1 after testing across Live distros.
+    fix=None,  # Audit-only in v0.5; auto-fix planned for a future release after testing across Live distros.
 ))
 
 
@@ -564,7 +578,7 @@ def _check_forensic_execve() -> CheckResult:
         if "-S execve" in line and "auid>=1000" in line:
             return CheckResult("pass", "broader user-execve audit rule active")
     return CheckResult(
-        "fail",
+        "manual",
         "no broader user-execve audit rule active. CIS 4.1.13 captures only "
         "privilege-transition execves (sudo/su/pkexec/setuid). For forensic "
         "coverage of every command run as a real user, add to "

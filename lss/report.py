@@ -10,6 +10,13 @@ from pathlib import Path
 
 from lss import __version__
 from lss.lib.output import info, err, warn, DIM, RESET
+from lss.lib.paths import (
+    chown_to_invoking_user,
+    default_html_report_dir,
+    ensure_report_dir,
+    file_uri,
+    open_in_browser,
+)
 
 
 RESULTS_DIR = Path("/var/log/lss")
@@ -69,19 +76,50 @@ def run_report(args) -> int:
             warn(f"baseline host '{base_host.get('name')}' differs from current host "
                  f"'{host.get('name')}' — delta may compare unrelated configurations.")
 
-    output_path = args.output or str(RESULTS_DIR / f"report-{ts}.html")
+    if args.output:
+        output_path = Path(args.output)
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+    else:
+        report_dir = ensure_report_dir(default_html_report_dir())
+        output_path = report_dir / f"report-{ts}.html"
 
     html_text = _render(ts, host, summary, controls, baseline_data)
-    Path(output_path).write_text(html_text)
+    output_path.write_text(html_text)
+    chown_to_invoking_user(output_path)
 
-    if baseline_data:
-        info(f"Report (with delta vs {baseline_path}): {output_path}")
-    else:
-        info(f"Report: {output_path}")
+    label = f"Report (with delta vs {baseline_path})" if baseline_data else "Report"
+    info(f"{label}: {file_uri(output_path)}")
+
+    if getattr(args, "open", False):
+        if not open_in_browser(output_path):
+            warn("could not launch a browser; open the URL above manually")
+
     return 0
 
 
-_KNOWN_STATUSES = {"pass", "fail", "warn", "skip"}
+def write_html_report(data: dict, baseline_data: dict | None = None,
+                      output_path: Path | None = None) -> Path:
+    """Render and persist an HTML report. Returns the path written.
+
+    Used by `lss audit` to emit a customer-readable report alongside the
+    JSON audit log without going through the `lss report` CLI gate.
+    Caller is responsible for printing the path.
+    """
+    ts = data["timestamp"]
+    if output_path is None:
+        report_dir = ensure_report_dir(default_html_report_dir())
+        output_path = report_dir / f"report-{ts}.html"
+    else:
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    html_text = _render(ts, data["host"], data["summary"], data["controls"],
+                        baseline_data)
+    output_path.write_text(html_text)
+    chown_to_invoking_user(output_path)
+    return output_path
+
+
+_KNOWN_STATUSES = {"pass", "fail", "warn", "manual", "skip"}
 
 
 def _compute_delta(baseline_controls: list[dict], latest_controls: list[dict]) -> dict:
@@ -164,7 +202,10 @@ def _delta_summary(delta: dict) -> dict:
 
 
 def _status_pill(status: str) -> str:
-    css_class = {"pass": "pass", "warn": "warn", "fail": "fail", "skip": "skip"}.get(status, "fail")
+    css_class = {
+        "pass": "pass", "warn": "warn", "fail": "fail",
+        "manual": "manual", "skip": "skip",
+    }.get(status, "fail")
     label = _h(status).upper() if status else "—"
     return f'<span class="pill {css_class}">{label}</span>'
 
@@ -267,6 +308,8 @@ def _render(ts: str, host: dict, summary: dict, controls: list[dict],
     --warn-bg: #fff1d6;
     --fail: #b3263a;
     --fail-bg: #fde2e6;
+    --manual: #8a5a00;
+    --manual-bg: #fff4d6;
     --blue: #2a5fcc;
   }}
   * {{ box-sizing: border-box; margin: 0; padding: 0; }}
@@ -283,7 +326,7 @@ def _render(ts: str, host: dict, summary: dict, controls: list[dict],
   .header .meta {{ text-align: right; font-size: 12px; color: var(--ink2);
     font-family: 'Courier New', monospace; }}
   .stat-row {{
-    display: grid; grid-template-columns: repeat(4, 1fr); gap: 16px; margin-bottom: 32px;
+    display: grid; grid-template-columns: repeat(6, 1fr); gap: 12px; margin-bottom: 32px;
   }}
   .stat {{
     text-align: center; padding: 16px 8px; border-radius: 8px; background: var(--surface);
@@ -294,6 +337,7 @@ def _render(ts: str, host: dict, summary: dict, controls: list[dict],
   .stat.ok .n {{ color: var(--pass); }}
   .stat.warn .n {{ color: var(--warn); }}
   .stat.bad .n {{ color: var(--fail); }}
+  .stat.manual .n {{ color: var(--manual); }}
   table {{
     width: 100%; border-collapse: collapse; font-size: 13px; margin-bottom: 32px;
   }}
@@ -313,6 +357,7 @@ def _render(ts: str, host: dict, summary: dict, controls: list[dict],
   .pill.pass {{ background: var(--pass-bg); color: var(--pass); }}
   .pill.warn {{ background: var(--warn-bg); color: var(--warn); }}
   .pill.fail {{ background: var(--fail-bg); color: var(--fail); }}
+  .pill.manual {{ background: var(--manual-bg); color: var(--manual); }}
   .pill.skip {{ background: var(--surface); color: var(--ink2); }}
   .pill.new {{ background: #e7eefe; color: var(--blue); }}
   .pill.change-fixed {{ background: var(--pass-bg); color: var(--pass); }}
@@ -363,7 +408,9 @@ def _render(ts: str, host: dict, summary: dict, controls: list[dict],
   <div class="stat ok"><div class="n">{int(summary.get('pass', 0))}</div><div class="l">Pass</div></div>
   <div class="stat warn"><div class="n">{int(summary.get('warn', 0))}</div><div class="l">Warn</div></div>
   <div class="stat bad"><div class="n">{int(summary.get('fail', 0))}</div><div class="l">Fail</div></div>
-  <div class="stat"><div class="n">{int(summary.get('score', 0))}%</div><div class="l">Score</div></div>
+  <div class="stat manual"><div class="n">{int(summary.get('manual', 0))}</div><div class="l">Manual</div></div>
+  <div class="stat ok"><div class="n">{int(summary.get('score', 0))}%</div><div class="l">Hardened</div></div>
+  <div class="stat"><div class="n">{int(summary.get('compliance_score', summary.get('score', 0)))}%</div><div class="l">Compliance</div></div>
 </div>
 
 {_delta_block_html(delta_summary, baseline_data)}
@@ -377,7 +424,7 @@ def _render(ts: str, host: dict, summary: dict, controls: list[dict],
 </table>
 
 <div class="footer">
-  Generated {now} by The Linux Security Suite &mdash; linuxsecuritysuite.com
+  Generated {now} by The Linux Security Suite
 </div>
 
 </body>

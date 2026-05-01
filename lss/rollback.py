@@ -92,7 +92,13 @@ def run_rollback(args) -> int:
     header("Rollback")
 
     errors = 0
-    for control_id, entries in controls.items():
+    # Iterate controls in reverse application order so that when multiple
+    # controls modified the same file, the LAST control's undo runs first.
+    # If the OUTER loop runs forward, an early control's `rm -f` deletes
+    # the file before later controls' "restore from backup" recreate it
+    # with their stale post-edit state — leaving the file partially
+    # hardened. See rollback regression test for the multi-control case.
+    for control_id, entries in reversed(list(controls.items())):
         for entry in reversed(entries):  # reverse order for safe undo
             action = entry.get("action", "")
             backup = entry.get("backup", "") or ""
