@@ -13,6 +13,7 @@ from rich.rule import Rule
 from rich.align import Align
 from rich.layout import Layout
 from rich.live import Live
+from rich.progress import Progress, SpinnerColumn, BarColumn, TextColumn
 from rich import box
 
 # Global console — shared everywhere
@@ -45,6 +46,10 @@ if _use_color:
 def disable_color():
     global _use_color
     _use_color = False
+    # Also strip rich's own coloring (Panels/Tables/Text), not just the legacy
+    # ANSI constants — otherwise --no-color only half-works.
+    console.no_color = True
+    err_console.no_color = True
 
 
 # ---------------------------------------------------------------------------
@@ -76,22 +81,22 @@ _section_idx = 0
 # Banner
 # ---------------------------------------------------------------------------
 def print_banner_art():
-    logo = Text()
-    logo.append("    ██╗     ███████╗███████╗\n", style="bold dodger_blue2")
-    logo.append("    ██║     ██╔════╝██╔════╝\n", style="bold bright_cyan")
-    logo.append("    ██║     ███████╗███████╗\n", style="bold deep_sky_blue1")
-    logo.append("    ██║     ╚════██║╚════██║\n", style="bold bright_cyan")
-    logo.append("    ███████╗███████║███████║\n", style="bold dodger_blue2")
-    logo.append("    ╚══════╝╚══════╝╚══════╝\n", style="dim blue")
-    logo.append("\n    T H E   L I N U X   S E C U R I T Y   S U I T E", style="bold grey70")
+    """Slim, professional one-line wordmark — no ASCII art, no logo splash.
 
+    A tool that modifies sshd/PAM/the firewall should read as sober and
+    competent, not as a hacker toy. One branded line, then get to work.
+    """
+    from lss import __version__
+    head = Table.grid(expand=True)
+    head.add_column(justify="left")
+    head.add_column(justify="right")
+    left = Text()
+    left.append(" lss ", style="bold black on bright_cyan")
+    left.append("  Linux Security Suite", style="bold grey85")
+    head.add_row(left, Text(f"v{__version__}", style="grey50"))
     console.print()
-    console.print(Panel(
-        logo,
-        border_style="blue",
-        box=box.DOUBLE_EDGE,
-        padding=(0, 2),
-    ))
+    console.print(head)
+    console.print(Rule(style="grey30"))
 
 
 # ---------------------------------------------------------------------------
@@ -157,107 +162,171 @@ def print_result(control_id: str, title: str, status: str, detail: str = ""):
 # ---------------------------------------------------------------------------
 # Score gauge
 # ---------------------------------------------------------------------------
-def _score_bar(score: int, width: int = 50) -> Text:
-    filled = round(score / 100 * width)
-    empty = width - filled
-
-    if score >= 90:
-        fill_style = "on green"
-        text_style = "bold spring_green3"
-    elif score >= 70:
-        fill_style = "on dark_orange"
-        text_style = "bold dark_orange"
-    else:
-        fill_style = "on red1"
-        text_style = "bold red1"
-
+def _bar(frac: float, width: int, style: str) -> Text:
+    f = max(0, min(width, round(frac * width)))
     bar = Text()
-    bar.append("█" * filled, style=fill_style.replace("on ", ""))
-    bar.append("░" * empty, style="grey30")
-    bar.append(f"  {score}%", style=text_style)
+    bar.append("█" * f, style=style)
+    bar.append("░" * (width - f), style="grey35")
     return bar
 
 
-# ---------------------------------------------------------------------------
-# Summary
-# ---------------------------------------------------------------------------
-def print_summary(passes: int, warns: int, fails: int, skips: int = 0, manuals: int = 0):
-    total = passes + warns + fails + skips + manuals
+def _verdict(score: int) -> tuple[str, str]:
+    if score >= 90:
+        return "HARDENED", "spring_green3"
+    if score >= 70:
+        return "NEEDS WORK", "gold1"
+    return "AT RISK", "red1"
 
-    # Two scores so the operator can see both sides:
-    #   Hardened — passes / (pass+warn+fail) — what LSS auto-hardened
-    #   Compliance — passes / (pass+warn+fail+manual) — full CIS posture
-    # Manuals deliberately don't count against the hardened score: they're
-    # controls LSS won't auto-fix by design (operator opt-in required), and
-    # punishing the score for that restraint creates the wrong incentive.
+
+# ---------------------------------------------------------------------------
+# Summary — verdict-led scorecard you read in one glance
+# ---------------------------------------------------------------------------
+def print_summary(passes: int, warns: int, fails: int, skips: int = 0,
+                  manuals: int = 0, host_label: str = "", hostname: str = ""):
+    # Hardened — passes / (pass+warn+fail), what LSS can act on.
+    # Compliance — passes / (pass+warn+fail+manual), full CIS posture.
+    # Manuals don't drag the hardened score: they're deliberate opt-ins.
     hardened_applicable = passes + warns + fails
     compliance_applicable = passes + warns + fails + manuals
-    hardened_score = round(passes / hardened_applicable * 100) if hardened_applicable else 0
-    compliance_score = round(passes / compliance_applicable * 100) if compliance_applicable else 0
+    hardened = round(passes / hardened_applicable * 100) if hardened_applicable else 0
+    compliance = round(passes / compliance_applicable * 100) if compliance_applicable else 0
+    verdict, vstyle = _verdict(hardened)
 
     console.print()
+    head = Table.grid(expand=True)
+    head.add_column(justify="left")
+    head.add_column(justify="right")
+    ctx = f"{hostname} · {host_label}" if hostname else host_label
+    head.add_row(Text("  SECURITY POSTURE", style="bold grey70"),
+                 Text(f"{ctx}  ", style="grey50"))
+    console.print(head)
+    console.print()
 
-    # Two score bars, labeled
-    score_panel = Table.grid(padding=(0, 0))
-    score_panel.add_column(justify="right", style="grey70", min_width=12)
-    score_panel.add_column()
-    score_panel.add_row("[bold]Hardened[/]  ", _score_bar(hardened_score, width=50))
-    score_panel.add_row("[bold]Compliance[/]  ", _score_bar(compliance_score, width=50))
-
-    # Stats — six columns now (added manual)
-    stats = Table.grid(padding=(0, 3))
-    for _ in range(6):
-        stats.add_column(justify="center")
-
-    stats.add_row(
-        f"[bold spring_green3]{passes}[/]\n[grey50]pass[/]",
-        f"[bold dark_orange]{warns}[/]\n[grey50]warn[/]",
-        f"[bold red1]{fails}[/]\n[grey50]fail[/]",
-        f"[bold gold1]{manuals}[/]\n[grey50]manual[/]",
-        f"[bold grey50]{skips}[/]\n[grey50]skip[/]",
-        f"[bold grey70]{total}[/]\n[grey50]total[/]",
+    score = Text("  ")
+    score.append(f"{hardened}%  ", style=f"bold {vstyle}")
+    score.append_text(_bar(hardened / 100, 34, vstyle))
+    score.append(f"   {verdict}", style=f"bold {vstyle}")
+    console.print(score)
+    console.print(
+        Text("  hardened", style="grey50"),
+        Text(f"   ·   {compliance}% full compliance (incl. manual review)", style="grey42"),
     )
-
-    # Combined panel
-    inner = Table.grid(padding=(1, 0))
-    inner.add_column()
-    inner.add_row(Align.center(score_panel))
-    inner.add_row(Align.center(stats))
-
-    console.print(Panel(
-        inner,
-        title="[bold bright_cyan]Security Score[/]",
-        border_style="blue",
-        box=box.ROUNDED,
-        padding=(1, 4),
-    ))
     console.print()
+
+    tiles = Text("  ")
+    for label, n, style, sym in (
+        ("pass", passes, "spring_green3", "✔"),
+        ("warn", warns, "gold1", "▲"),
+        ("fail", fails, "red1", "✘"),
+        ("manual", manuals, "orange1", "◐"),
+        ("skip", skips, "grey50", "·"),
+    ):
+        tiles.append(f"{sym} ", style=style)
+        tiles.append(f"{n} ", style=f"bold {style}")
+        tiles.append(f"{label}    ", style="grey54")
+    console.print(tiles)
+    console.print()
+
+
+# ---------------------------------------------------------------------------
+# Section breakdown — one bar per CIS section so gaps jump out
+# ---------------------------------------------------------------------------
+def print_section_breakdown(results: list[dict]):
+    agg: dict[str, list[int]] = {}
+    for r in results:
+        if r.get("status") == "skip":
+            continue
+        a = agg.setdefault(r.get("section", ""), [0, 0])
+        a[1] += 1
+        if r.get("status") == "pass":
+            a[0] += 1
+    order = list(_SECTION_LABELS.keys())
+    rows = [(s, agg[s][0], agg[s][1]) for s in order if s in agg and agg[s][1] > 0]
+    rows += [(s, agg[s][0], agg[s][1]) for s in agg
+             if s not in order and agg[s][1] > 0]
+    if not rows:
+        return
+    console.print(Text("  BY SECTION", style="bold grey70"))
+    grid = Table.grid(padding=(0, 2))
+    grid.add_column(justify="left", style="grey70", min_width=24)
+    grid.add_column()
+    grid.add_column(justify="right", style="grey58")
+    for sec, p, t in rows:
+        frac = p / t if t else 0
+        style = "spring_green3" if frac >= 0.9 else "gold1" if frac >= 0.6 else "red1"
+        grid.add_row(f"  {_SECTION_LABELS.get(sec, sec.title())}",
+                     _bar(frac, 18, style), f"{p}/{t}")
+    console.print(grid)
+    console.print()
+
+
+# ---------------------------------------------------------------------------
+# Next steps — hand the operator the exact command
+# ---------------------------------------------------------------------------
+def print_next_steps(fails: int, manuals: int, report_uri: str = ""):
+    nxt = Table.grid(padding=(0, 2))
+    nxt.add_column(style="bright_cyan", min_width=30)
+    nxt.add_column(style="grey54")
+    if fails:
+        nxt.add_row(Text(" sudo lss harden --confirm", style="bold bright_cyan"),
+                    f"apply {fails} fixes · every change is reversible")
+        nxt.add_row(Text(" sudo lss harden --dry-run", style="bright_cyan"),
+                    "preview the plan, change nothing")
+    nxt.add_row(Text(" sudo lss rollback --last", style="bright_cyan"),
+                "undo the last harden run instantly")
+    console.print(Panel(nxt, title="[bold grey85]NEXT[/]", title_align="left",
+                        border_style="grey30", box=box.ROUNDED, padding=(1, 2)))
+    if report_uri:
+        console.print(Text(f"  report → {report_uri}", style="grey50"))
+    console.print()
+
+
+# ---------------------------------------------------------------------------
+# Live scan progress — transient bar that clears when the scan finishes
+# ---------------------------------------------------------------------------
+def audit_progress() -> Progress:
+    return Progress(
+        SpinnerColumn(style="bright_cyan"),
+        TextColumn("[grey85]Auditing[/]"),
+        BarColumn(bar_width=30, complete_style="bright_cyan",
+                  finished_style="bright_cyan", pulse_style="grey35"),
+        TextColumn("[bold bright_cyan]{task.percentage:>3.0f}%[/]"),
+        TextColumn("[grey54]{task.fields[cur]}[/]"),
+        console=console,
+        transient=True,
+    )
 
 
 # ---------------------------------------------------------------------------
 # Fails and warns summary tables
 # ---------------------------------------------------------------------------
-def print_fails_table(results: list[dict]):
+def print_fails_table(results: list[dict], limit: int = 12):
     fails = [r for r in results if r["status"] == "fail"]
     if not fails:
         return
 
+    shown = fails[:limit]
+    extra = len(fails) - len(shown)
     table = Table(
-        title=f"[bold red1]Failing Controls ({len(fails)})[/]",
-        border_style="red",
-        box=box.SIMPLE_HEAVY,
+        title=f"[bold red1]Failing controls[/]  [grey54]({len(fails)} · all auto-fixable)[/]",
+        title_justify="left",
+        caption=(f"[grey50]+ {extra} more — full list in the report[/]" if extra else None),
+        caption_justify="left",
+        border_style="grey30",
+        box=box.SIMPLE,
         show_lines=False,
         padding=(0, 1),
     )
-    table.add_column("ID", style="bold red1", width=10)
+    table.add_column("", style="red1", width=1)
+    table.add_column("ID", style="bold grey82", width=9)
     table.add_column("Control", style="grey70")
-    table.add_column("Detail", style="dark_orange")
+    table.add_column("What's wrong", style="grey54")
 
-    for r in fails:
+    for r in shown:
         detail = r.get("detail", "")
-        if len(detail) > 40:
-            detail = detail[:37] + "..."
-        table.add_row(r["id"], r["title"], detail)
+        if len(detail) > 44:
+            detail = detail[:43] + "…"
+        table.add_row("✘", r["id"], r["title"], detail)
 
     console.print(table)
     console.print()
@@ -302,19 +371,22 @@ def print_manuals_table(results: list[dict]):
         return
 
     table = Table(
-        title=f"[bold gold1]Needs Manual Action ({len(manuals)})[/]",
-        caption="[grey50]These require operator action — `lss harden` will not auto-apply them.[/]",
-        border_style="gold1",
-        box=box.SIMPLE_HEAVY,
+        title=f"[bold orange1]Needs manual review[/]  [grey54]({len(manuals)})[/]",
+        title_justify="left",
+        caption="[grey50]LSS won't auto-apply these — review and apply by hand.[/]",
+        caption_justify="left",
+        border_style="grey30",
+        box=box.SIMPLE,
         show_lines=True,
         padding=(0, 1),
     )
-    table.add_column("ID", style="bold gold1", width=10)
-    table.add_column("Control", style="grey70", width=40)
-    table.add_column("How to remediate", style="grey70")
+    table.add_column("", style="orange1", width=1)
+    table.add_column("ID", style="bold grey82", width=9)
+    table.add_column("Control", style="grey70", width=34)
+    table.add_column("How to remediate", style="grey58")
 
     for r in manuals:
-        table.add_row(r["id"], r["title"], r.get("detail", ""))
+        table.add_row("◐", r["id"], r["title"], r.get("detail", ""))
 
     console.print(table)
     console.print()

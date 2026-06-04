@@ -40,7 +40,10 @@ def resolve_invoking_user() -> Optional[InvokingUser]:
     if sudo_uid and sudo_gid and sudo_user and sudo_user != "root":
         try:
             pw = pwd.getpwnam(sudo_user)
-            return InvokingUser(int(sudo_uid), int(sudo_gid), sudo_user, Path(pw.pw_dir))
+            # Take uid/gid from the passwd DB, NOT the env SUDO_UID/SUDO_GID,
+            # which are attacker-spoofable (e.g. SUDO_USER=lowpriv with a
+            # mismatched SUDO_UID would chown reports to an arbitrary uid).
+            return InvokingUser(pw.pw_uid, pw.pw_gid, sudo_user, Path(pw.pw_dir))
         except (KeyError, ValueError):
             return None
 
@@ -87,7 +90,7 @@ def ensure_report_dir(path: Path) -> Path:
         return path
     for p in created:
         try:
-            os.chown(p, user.uid, user.gid)
+            os.chown(p, user.uid, user.gid, follow_symlinks=False)
         except (PermissionError, FileNotFoundError):
             pass
     return path
@@ -103,11 +106,21 @@ def chown_to_invoking_user(path: Path) -> None:
     user = resolve_invoking_user()
     if user is None or os.geteuid() != 0:
         return
+    # Operate on an O_NOFOLLOW fd, never a path. The report dir lives under the
+    # invoking user's own $HOME, so a path-based chown/chmod could be aimed at a
+    # symlink to a root-owned file (e.g. /etc/shadow) — a local privesc. Opening
+    # O_NOFOLLOW refuses symlinks (ELOOP) and closes the TOCTOU window.
     try:
-        os.chown(path, user.uid, user.gid)
-        os.chmod(path, 0o640)
-    except (PermissionError, FileNotFoundError):
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+    except OSError:
+        return
+    try:
+        os.fchown(fd, user.uid, user.gid)
+        os.fchmod(fd, 0o640)
+    except OSError:
         pass
+    finally:
+        os.close(fd)
 
 
 def file_uri(path: Path) -> str:

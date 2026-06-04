@@ -82,6 +82,18 @@ def _check_permit_root() -> CheckResult:
 
 
 def _fix_permit_root() -> list[RollbackEntry]:
+    # SAFETY: refuse to disable root SSH login when root is the ONLY way in
+    # (common on cloud root-only images) — applying it there locks the operator
+    # out permanently. Leaving the control failing is the safe outcome; the
+    # operator creates a sudo user first, then re-runs.
+    # UNVERIFIED on a live host — verify on a throwaway Debian VM.
+    from lss.lib.sshd import has_non_root_admin
+    from lss.lib.output import warn
+    if not has_non_root_admin():
+        warn("5.2.11 skipped: no non-root sudo/wheel admin with a login shell — "
+             "disabling root SSH login now would lock you out. Create an admin "
+             "user first, then re-run harden.")
+        return []
     return [_set_sshd_setting("PermitRootLogin", "no")]
 
 

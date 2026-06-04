@@ -18,7 +18,18 @@ def _check_bootloader_password() -> CheckResult:
         p = Path(grub_cfg)
         if p.exists():
             text = p.read_text()
-            if "password" in text.lower() or "set superusers" in text:
+            # A real GRUB password needs BOTH a password directive AND a
+            # superusers line. Substring-matching "password" false-passes on
+            # comments/help text in grub.cfg (a security control reporting
+            # compliant when it isn't), so match the actual directives.
+            has_pw = any(
+                l.strip().startswith(("password_pbkdf2 ", "password "))
+                for l in text.splitlines()
+            )
+            has_superusers = any(
+                l.strip().startswith("set superusers") for l in text.splitlines()
+            )
+            if has_pw and has_superusers:
                 return CheckResult("pass")
             return CheckResult(
                 "fail",

@@ -10,10 +10,9 @@ from pathlib import Path
 from lss import __version__
 from lss.lib import distro
 from lss.lib.output import (
-    console, info, header, rule, heavy_rule, section_header,
-    print_result, print_summary, print_banner_art, print_host_info,
-    print_fails_table, print_warns_table, print_manuals_table,
-    DIM, RESET, BOLD, CYAN,
+    console, print_summary, print_banner_art, print_fails_table,
+    print_manuals_table, print_section_breakdown, print_next_steps,
+    audit_progress,
 )
 from lss.lib.registry import get_controls, CheckResult
 
@@ -62,77 +61,57 @@ def _get_uptime() -> str:
 def run_audit(args) -> int:
     """Execute audit and return exit code (number of failures)."""
     host = distro.detect()
-    uptime = _get_uptime()
     json_mode = bool(getattr(args, "json", False))
 
     # In --json mode, suppress all decorative rich output so the JSON on stdout
-    # is parseable. Status messages still go to stderr.
+    # stays parseable.
     if not json_mode:
         print_banner_art()
 
     controls = get_controls(ids=args.control if args.control else None)
-    if not json_mode:
-        print_host_info(host.name, _hostname(), host.kernel, uptime, len(controls))
+    checkable = [c for c in controls if c.check is not None]
 
     results: list[dict] = []
-    passes = warns = fails = manuals = skips = 0
-    current_section = ""
-    seen_sections: set[str] = set()
+    counts = {"pass": 0, "warn": 0, "fail": 0, "manual": 0, "skip": 0}
 
-    for ctrl in controls:
-        if ctrl.check is None:
-            continue
-
-        if not json_mode and ctrl.section != current_section:
-            current_section = ctrl.section
-            if current_section not in seen_sections:
-                seen_sections.add(current_section)
-                section_header(current_section)
-
+    def _check(ctrl):
         try:
             r: CheckResult = ctrl.check()
         except Exception as exc:
             r = CheckResult(status="fail", detail=f"check error: {exc}")
-
-        if not json_mode:
-            print_result(ctrl.id, ctrl.title, r.status, r.detail)
-
         results.append({
-            "id": ctrl.id,
-            "title": ctrl.title,
-            "section": ctrl.section,
-            "level": ctrl.level,
-            "status": r.status,
-            "detail": r.detail,
+            "id": ctrl.id, "title": ctrl.title, "section": ctrl.section,
+            "level": ctrl.level, "status": r.status, "detail": r.detail,
         })
+        counts[r.status if r.status in counts else "fail"] += 1
 
-        if r.status == "pass":
-            passes += 1
-        elif r.status == "warn":
-            warns += 1
-        elif r.status == "manual":
-            manuals += 1
-        elif r.status == "skip":
-            skips += 1
-        else:
-            fails += 1
+    # Live progress while scanning (TTY only) — the "watch it work" beat.
+    # Non-TTY / --json: run the checks silently, no decorative output.
+    if not json_mode and console.is_terminal:
+        with audit_progress() as progress:
+            task = progress.add_task("audit", total=len(checkable), cur="")
+            for ctrl in checkable:
+                progress.update(task, cur=f"{ctrl.id}  {ctrl.title[:36]}")
+                _check(ctrl)
+                progress.update(task, advance=1)
+    else:
+        for ctrl in checkable:
+            _check(ctrl)
+
+    passes, warns, fails = counts["pass"], counts["warn"], counts["fail"]
+    manuals, skips = counts["manual"], counts["skip"]
+
+    # Persist results (+ HTML); returns the report URI for the NEXT block.
+    report_uri = _save_results(results, host, passes, warns, fails, skips,
+                               manuals=manuals, json_mode=json_mode, args=args)
 
     if not json_mode:
-        print_summary(passes, warns, fails, skips, manuals=manuals)
+        print_summary(passes, warns, fails, skips, manuals=manuals,
+                      host_label=host.name, hostname=_hostname())
+        print_section_breakdown(results)
         print_fails_table(results)
-        print_warns_table(results)
         print_manuals_table(results)
-
-    # Always persist results — `lss report` reads them
-    _save_results(results, host, passes, warns, fails, skips, manuals=manuals,
-                  json_mode=json_mode, args=args)
-
-    if not json_mode and fails > 0:
-        console.print(
-            "  [grey50]Apply remediations now?  Run:[/]  "
-            "[bold bright_cyan]sudo lss harden --confirm[/]"
-        )
-        console.print()
+        print_next_steps(fails, manuals, report_uri=report_uri or "")
 
     if json_mode:
         # Hardened score: passes / (pass+warn+fail) — what LSS finished
@@ -205,6 +184,7 @@ def _save_results(results: list[dict], host, passes: int, warns: int, fails: int
     # --no-report on the audit subcommand for JSON-only / scripted use.
     # --json implies --no-report: scripted/CI consumers want stdout JSON, not
     # an unrelated HTML side-effect on disk.
+    report_uri = ""
     html_path = None
     skip_html = json_mode or bool(
         args is not None and getattr(args, "no_report", False)
@@ -212,21 +192,17 @@ def _save_results(results: list[dict], host, passes: int, warns: int, fails: int
     if not skip_html:
         try:
             from lss.report import write_html_report
-            from lss.lib.paths import file_uri, open_in_browser
+            from lss.lib.paths import file_uri
             html_path = write_html_report(data)
+            report_uri = file_uri(html_path)
         except Exception as exc:
             if not json_mode:
                 console.print(f"  [yellow]Could not generate HTML report:[/] {exc}")
 
-    if not json_mode:
-        console.print(f"  [grey50]Report data:[/]  [grey70]{out}[/]")
-        if html_path is not None:
-            console.print(f"  [grey50]HTML report:[/]  [bold]{file_uri(html_path)}[/]")
-        else:
-            console.print("  [grey50]HTML report:[/]  [bold]sudo lss report[/]")
-        console.print()
-
     if html_path is not None and args is not None and getattr(args, "open", False):
+        from lss.lib.paths import open_in_browser
         if not open_in_browser(html_path):
             if not json_mode:
                 console.print("  [yellow]Could not launch a browser; open the URL above manually.[/]")
+
+    return report_uri

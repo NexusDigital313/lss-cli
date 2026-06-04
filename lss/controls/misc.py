@@ -184,7 +184,13 @@ def _check_usb_storage() -> CheckResult:
                         capture_output=True, text=True)
     if r2.returncode == 0 and r2.stdout.strip():
         return CheckResult("pass")
-    return CheckResult("fail", "usb-storage module is not disabled")
+    return CheckResult(
+        "manual",
+        "usb-storage not disabled — blacklist by hand "
+        "(echo 'install usb-storage /bin/true' > /etc/modprobe.d/usb-storage.conf). "
+        "DO NOT do this on a USB-booted host (e.g. Kali Live) — it can strand the "
+        "running filesystem and leave the box unbootable.",
+    )
 
 
 def _fix_usb_storage() -> list[RollbackEntry]:
@@ -205,7 +211,7 @@ register(Control(
     title="Ensure USB storage is disabled",
     section="filesystem",
     check=_check_usb_storage,
-    fix=_fix_usb_storage,
+    fix=None,  # DEFANGED: rmmod + blacklist usb-storage bricks USB-booted hosts (Kali Live is the flagship target). Apply by hand only on non-USB-booted machines.
 ))
 
 

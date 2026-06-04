@@ -115,7 +115,19 @@ def _check_iptables_default_deny() -> CheckResult:
         issues.append("INPUT not DROP/REJECT")
     if not has_forward_drop:
         issues.append("FORWARD not DROP/REJECT")
-    return CheckResult("fail", "; ".join(issues))
+    # MANUAL (LSS safety): a default-deny policy is correct, but auto-applying
+    # it sets INPUT to DROP before the allow-rules (loopback, ESTABLISHED, SSH)
+    # exist — which severs the operator's own SSH session: an instant, no-warning
+    # remote lockout. Apply by hand, ensuring these run FIRST:
+    #   iptables -A INPUT -i lo -j ACCEPT
+    #   iptables -A INPUT -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
+    #   iptables -A INPUT -p tcp --dport 22 -j ACCEPT      # or your SSH port
+    #   iptables -P INPUT DROP                             # only after the above
+    return CheckResult(
+        "manual",
+        f"{'; '.join(issues)} — set default-deny by hand AFTER allowing loopback + "
+        "ESTABLISHED,RELATED + SSH, or you will lock yourself out remotely",
+    )
 
 
 def _fix_iptables_default_deny() -> list[RollbackEntry]:
@@ -144,7 +156,7 @@ register(Control(
     title="Ensure iptables default deny firewall policy",
     section="network",
     check=_check_iptables_default_deny,
-    fix=_fix_iptables_default_deny,
+    fix=None,  # DEFANGED: auto-applying default-deny before allow-rules = remote lockout (see check). Re-enable only with an allow-SSH-first fix verified on a real host.
 ))
 
 

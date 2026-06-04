@@ -149,7 +149,7 @@ register(Control(
     title="Ensure root login is restricted to system console",
     section="auth",
     check=_check_securetty,
-    fix=_fix_securetty,
+    fix=None,  # DEFANGED: truncating /etc/securetty to console,tty1 locks root out of serial/SoL consoles on headless/remote hosts. Trim by hand, preserving the consoles you actually use.
 ))
 
 

@@ -248,7 +248,13 @@ def _check_su_restricted() -> CheckResult:
             continue
         if "pam_wheel.so" in stripped and "required" in stripped:
             return CheckResult("pass")
-    return CheckResult("fail", "pam_wheel.so not required in /etc/pam.d/su")
+    return CheckResult(
+        "manual",
+        "pam_wheel.so not required in /etc/pam.d/su — add by hand: "
+        "`auth required pam_wheel.so use_uid group=<admin-group>` "
+        "(group is 'sudo' on Debian, 'wheel' on RHEL). Confirm a real admin is "
+        "already IN that group first, or you lock everyone out of su.",
+    )
 
 
 def _fix_su_restricted() -> list[RollbackEntry]:
@@ -282,7 +288,7 @@ register(Control(
     title="Ensure access to the su command is restricted",
     section="auth",
     check=_check_su_restricted,
-    fix=_fix_su_restricted,
+    fix=None,  # DEFANGED: hardcoded group=sudo (wrong on RHEL/wheel) + no non-empty-group check can lock everyone out of su. Apply by hand after verifying the admin group.
 ))
 
 

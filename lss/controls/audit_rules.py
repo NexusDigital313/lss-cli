@@ -262,7 +262,13 @@ def _check_audit_immutable() -> CheckResult:
         return CheckResult("pass")
     if _rule_is_persisted("-e 2"):
         return CheckResult("warn", "immutable flag persisted but not active — reboot required")
-    return CheckResult("fail", "audit configuration is not immutable (-e 2)")
+    return CheckResult(
+        "manual",
+        "audit config not immutable — add `-e 2` as the LAST line of "
+        "/etc/audit/rules.d/*.rules by hand, then reboot. Apply it last: once "
+        "active, the audit config cannot be changed again without a reboot, so "
+        "LSS cannot auto-undo it.",
+    )
 
 
 def _fix_audit_immutable() -> list[RollbackEntry]:
@@ -292,5 +298,5 @@ register(Control(
     title="Ensure the audit configuration is immutable",
     section="logging",
     check=_check_audit_immutable,
-    fix=_fix_audit_immutable,
+    fix=None,  # DEFANGED: -e 2 is irreversible until reboot and can block other audit fixes; apply by hand, last.
 ))

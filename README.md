@@ -6,11 +6,11 @@
 [![License](https://img.shields.io/badge/license-Commercial-lightgrey.svg)](LICENSE)
 [![Python](https://img.shields.io/badge/python-3.10%2B-blue.svg)](https://www.python.org/downloads/)
 
-LSS scans your Linux host against **206 CIS-aligned hardening controls**, auto-fixes **172 of them**, and records every change in a rollback journal so a bad pass is one command away from being reversed. No agent, no cloud, no six-figure GRC platform — a single CLI for operators who want CIS-grade hardening they can actually undo.
+LSS scans your Linux host against **206 CIS-aligned hardening controls**, auto-fixes **167 of them**, and records every change in a rollback journal so a bad pass is one command away from being reversed. No agent, no cloud, no six-figure GRC platform — a single CLI for operators who want CIS-grade hardening they can actually undo.
 
 ```
 $ sudo lss audit                     # writes JSON to /var/log/lss/, HTML to your home, owned by you
-$ sudo lss harden --confirm          # applies 172 auto-fixes, skips the 34 that shouldn't be automated
+$ sudo lss harden --confirm          # applies 167 auto-fixes, skips the 39 that shouldn't be automated
 $ sudo lss rollback --last           # something broke? reverse it
 $ sudo lss report --open             # regenerate HTML and open it in your browser
 ```
@@ -43,14 +43,14 @@ sudo lss audit --open
 # Skip the HTML and only emit JSON (for scripts / CI pipelines)
 sudo lss audit --no-report
 
-# Apply every available auto-fix (172 of 206 controls)
+# Apply every available auto-fix (167 of 206 controls)
 sudo lss harden --confirm
 
 # Same, but prompt y/N before each fix
 sudo lss harden --confirm --interactive
 
 # Preview what harden would do, without touching the system
-sudo lss harden --confirm --dry-run
+sudo lss harden --dry-run
 
 # Cherry-pick controls
 sudo lss harden --confirm --control 5.2.3 --control 5.4.1.1
@@ -93,10 +93,10 @@ When invoked under `sudo`, LSS resolves the human operator via `SUDO_UID`/`SUDO_
 
 | | Count | What it means |
 |---|---|---|
-| **Automated fix** | 172 (83.5%) | `lss harden` applies the fix and records a rollback entry |
-| **Audit-only by design** | 34 (16.5%) | Flagged with an exact remediation command in the detail string |
+| **Automated fix** | 167 (81%) | `lss harden` applies the fix and records a rollback entry |
+| **Audit-only by design** | 39 (19%) | Flagged with an exact remediation command in the detail string |
 
-**Why 34 controls stay audit-only** (and won't be auto-fixed):
+**Why 39 controls stay audit-only** (and won't be auto-fixed):
 
 - **Bootloader/kernel-param edits** (1.4.2, 1.6.2, 4.1.2) — a bad GRUB write can render the host unbootable, and rollback can't reach a box that won't boot
 - **Partition layout** (1.1.2–1.1.7) — separating `/tmp`, `/var`, `/home` requires repartitioning with downtime and a recovery plan
@@ -152,7 +152,7 @@ Legacy pre-v0.3 journal entries with string-form undos are **refused, not execut
 | | **LSS** | Lynis | OpenSCAP | Chef InSpec |
 |---|---|---|---|---|
 | CIS Benchmark coverage | 206 controls | ~270 tests | SCAP content (varies) | Depends on profile |
-| **Automated remediation** | ✅ 172/206 | ❌ audit-only | ⚠️ via SCAP remediation | ⚠️ via custom wrappers |
+| **Automated remediation** | ✅ 167/206 | ❌ audit-only | ⚠️ via SCAP remediation | ⚠️ via custom wrappers |
 | **Built-in rollback** | ✅ journaled, argv-undo | ❌ | ❌ | ❌ |
 | Dry-run mode | ✅ | N/A (audit-only) | ⚠️ content-dependent | ✅ |
 | Machine-readable output | ✅ JSON | partial | XML/ARF | JSON |

@@ -121,6 +121,15 @@ def write_html_report(data: dict, baseline_data: dict | None = None,
 
 _KNOWN_STATUSES = {"pass", "fail", "warn", "manual", "skip"}
 
+_SECTION_TITLES = {
+    "filesystem": "Filesystem", "kernel": "Kernel Hardening",
+    "banners": "Warning Banners", "boot": "Boot & Packages",
+    "services": "Services", "network": "Network & Firewall",
+    "logging": "Logging & Auditing", "cron": "Cron & Scheduling",
+    "ssh": "SSH Server", "auth": "Authentication & Passwords",
+    "users": "Users & Groups",
+}
+
 
 def _compute_delta(baseline_controls: list[dict], latest_controls: list[dict]) -> dict:
     """Build a status-transition map keyed by control id.
@@ -210,31 +219,6 @@ def _status_pill(status: str) -> str:
     return f'<span class="pill {css_class}">{label}</span>'
 
 
-def _delta_block_html(delta_summary: dict | None, baseline_data: dict | None) -> str:
-    """Render the before/after summary block. Empty string when no baseline."""
-    if not delta_summary or not baseline_data:
-        return ""
-    baseline_ts = baseline_data.get("timestamp", "unknown")
-    improved = delta_summary.get('improved', 0)
-    improved_block = (
-        f'  <div class="stat improved"><div class="n">{improved}</div>'
-        f'<div class="l">Improved</div></div>\n'
-    ) if improved else ""
-    return f"""<div class="section-label">Change vs baseline ({_h(baseline_ts)})</div>
-<div class="delta-row">
-  <div class="stat fixed"><div class="n">{delta_summary.get('fixed', 0)}</div><div class="l">Fixed</div></div>
-{improved_block}  <div class="stat regressed"><div class="n">{delta_summary.get('regressed', 0)}</div><div class="l">Regressed</div></div>
-  <div class="stat still"><div class="n">{delta_summary.get('still_failing', 0)}</div><div class="l">Still failing</div></div>
-  <div class="stat unchanged"><div class="n">{delta_summary.get('unchanged_pass', 0)}</div><div class="l">Unchanged pass</div></div>
-</div>"""
-
-
-def _table_head_html(with_delta: bool) -> str:
-    if with_delta:
-        return "    <tr><th>ID</th><th>Control</th><th>Before</th><th>After</th><th>Change</th><th>Detail</th></tr>"
-    return "    <tr><th>ID</th><th>Control</th><th>Status</th><th>Detail</th></tr>"
-
-
 def _change_pill(change: str) -> str:
     """Render the delta-change category as a styled pill."""
     label_map = {
@@ -256,9 +240,160 @@ def _change_pill(change: str) -> str:
     return f'<span class="pill change-{css}">{label}</span>'
 
 
+def _delta_block_html(delta_summary: dict | None, baseline_data: dict | None) -> str:
+    """Render the before/after summary block. Empty string when no baseline."""
+    if not delta_summary or not baseline_data:
+        return ""
+    baseline_ts = _human_ts(baseline_data.get("timestamp", "unknown"))
+    improved = delta_summary.get('improved', 0)
+    improved_block = (
+        f'  <div class="stat improved"><div class="n">{improved}</div>'
+        f'<div class="l">Improved</div></div>\n'
+    ) if improved else ""
+    return f"""<div class="section-label">Change vs baseline ({baseline_ts})</div>
+<div class="delta-row">
+  <div class="stat fixed"><div class="n">{delta_summary.get('fixed', 0)}</div><div class="l">Fixed</div></div>
+{improved_block}  <div class="stat regressed"><div class="n">{delta_summary.get('regressed', 0)}</div><div class="l">Regressed</div></div>
+  <div class="stat still"><div class="n">{delta_summary.get('still_failing', 0)}</div><div class="l">Still failing</div></div>
+  <div class="stat unchanged"><div class="n">{delta_summary.get('unchanged_pass', 0)}</div><div class="l">Unchanged pass</div></div>
+</div>"""
+
+
+# ---------------------------------------------------------------------------
+# New report building blocks
+# ---------------------------------------------------------------------------
+def _human_ts(ts) -> str:
+    """Parse an audit timestamp into a human-readable date; fall back to raw."""
+    for fmt in ("%Y%m%dT%H%M%SZ", "%Y-%m-%dT%H:%M:%SZ",
+                "%Y-%m-%dT%H:%M:%S", "%Y-%m-%dT%H-%M-%S"):
+        try:
+            return datetime.strptime(str(ts), fmt).strftime("%B %d, %Y · %H:%M UTC")
+        except (ValueError, TypeError):
+            continue
+    return _h(ts)
+
+
+def _verdict(score: int) -> tuple[str, str]:
+    if score >= 90:
+        return "Hardened", "good"
+    if score >= 70:
+        return "Needs work", "warn"
+    return "At risk", "bad"
+
+
+def _grouped(controls: list[dict]):
+    """Yield (section_title, [controls]) in canonical CIS order, extras last."""
+    buckets: dict[str, list] = {}
+    for c in controls:
+        buckets.setdefault(c.get("section", ""), []).append(c)
+    seen = set()
+    for key in _SECTION_TITLES:
+        if key in buckets:
+            seen.add(key)
+            yield _SECTION_TITLES[key], buckets[key]
+    for key, items in buckets.items():
+        if key not in seen:
+            yield (_SECTION_TITLES.get(key) or (key.title() if key else "Other"), items)
+
+
+def _remediation_rows(items: list[dict]) -> str:
+    rows = ""
+    for c in items:
+        rows += (
+            f'      <tr><td class="cid">{_h(c.get("id"))}</td>'
+            f'<td>{_h(c.get("title"))}</td>'
+            f'<td class="rem">{_h(c.get("detail", "")) or "&mdash;"}</td></tr>\n'
+        )
+    return rows
+
+
+def _priority_html(controls: list[dict]) -> str:
+    fails = [c for c in controls if c.get("status") == "fail"]
+    if not fails:
+        return ('<div class="section-label">Fix these first</div>'
+                '<p class="ok-note">&#10003; No failing controls — nothing to auto-fix.</p>')
+    return f"""<div class="section-label">Fix these first &nbsp;·&nbsp; {len(fails)} failing, all auto-fixable</div>
+<p class="lead">Apply every fix below with one command. Each change is journaled and reversible
+with <code>sudo lss rollback --last</code>.</p>
+<pre class="cmd">sudo lss harden --confirm</pre>
+<table class="grid">
+  <thead><tr><th>ID</th><th>Control</th><th>What&rsquo;s wrong</th></tr></thead>
+  <tbody>
+{_remediation_rows(fails)}  </tbody>
+</table>"""
+
+
+def _manual_html(controls: list[dict]) -> str:
+    manuals = [c for c in controls if c.get("status") == "manual"]
+    if not manuals:
+        return ""
+    return f"""<div class="section-label">Manual review required &nbsp;·&nbsp; {len(manuals)}</div>
+<p class="lead">LSS will not auto-apply these — they carry a lockout or breakage risk and need an
+operator decision. Remediation guidance is included for each.</p>
+<table class="grid">
+  <thead><tr><th>ID</th><th>Control</th><th>How to remediate</th></tr></thead>
+  <tbody>
+{_remediation_rows(manuals)}  </tbody>
+</table>"""
+
+
+def _coverage_html(controls: list[dict]) -> str:
+    agg: dict[str, list] = {}
+    for c in controls:
+        if c.get("status") == "skip":
+            continue
+        a = agg.setdefault(c.get("section", ""), [0, 0])
+        a[1] += 1
+        if c.get("status") == "pass":
+            a[0] += 1
+    if not agg:
+        return ""
+    order = [k for k in _SECTION_TITLES if k in agg] + [k for k in agg if k not in _SECTION_TITLES]
+    rows = ""
+    for k in order:
+        passed, applicable = agg[k]
+        pct = round(passed / applicable * 100) if applicable else 0
+        cls = "good" if pct >= 90 else "warn" if pct >= 60 else "bad"
+        name = _SECTION_TITLES.get(k) or (k.title() if k else "Other")
+        rows += (
+            f'  <div class="cov-row"><div class="cov-name">{_h(name)}</div>'
+            f'<div class="cov-track"><div class="cov-fill {cls}" style="width:{pct}%"></div></div>'
+            f'<div class="cov-n">{passed}/{applicable}</div></div>\n'
+        )
+    return f'<div class="section-label">Coverage by section</div>\n<div class="cov">\n{rows}</div>'
+
+
+def _full_table_html(controls: list[dict], delta: dict | None) -> str:
+    with_delta = delta is not None
+    span = 6 if with_delta else 4
+    head = ("<tr><th>ID</th><th>Control</th><th>Before</th><th>After</th><th>Change</th><th>Detail</th></tr>"
+            if with_delta else "<tr><th>ID</th><th>Control</th><th>Status</th><th>Detail</th></tr>")
+    body = ""
+    for title, items in _grouped(controls):
+        body += f'      <tr class="sec"><td colspan="{span}">{_h(title)}</td></tr>\n'
+        for c in items:
+            cid = c.get("id")
+            detail = f'<td class="detail">{_h(c.get("detail", ""))}</td>'
+            if with_delta:
+                entry = delta.get(cid, {})
+                before = entry.get("before")
+                before_cell = _status_pill(before) if before else '<span class="pill new">NEW</span>'
+                body += (
+                    f'      <tr><td class="cid">{_h(cid)}</td><td>{_h(c.get("title"))}</td>'
+                    f'<td>{before_cell}</td><td>{_status_pill(c.get("status", ""))}</td>'
+                    f'<td>{_change_pill(entry.get("change", ""))}</td>{detail}</tr>\n'
+                )
+            else:
+                body += (
+                    f'      <tr><td class="cid">{_h(cid)}</td><td>{_h(c.get("title"))}</td>'
+                    f'<td>{_status_pill(c.get("status", ""))}</td>{detail}</tr>\n'
+                )
+    return f'<table class="grid full">\n  <thead>{head}</thead>\n  <tbody>\n{body}  </tbody>\n</table>'
+
+
 def _render(ts: str, host: dict, summary: dict, controls: list[dict],
             baseline_data: dict | None = None) -> str:
-    now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+    now = datetime.now(timezone.utc).strftime("%B %d, %Y · %H:%M UTC")
 
     delta = None
     delta_summary = None
@@ -266,165 +401,159 @@ def _render(ts: str, host: dict, summary: dict, controls: list[dict],
         delta = _compute_delta(baseline_data.get("controls", []), controls)
         delta_summary = _delta_summary(delta)
 
-    rows = ""
-    for c in controls:
-        cid = c.get("id")
-        if delta is not None:
-            entry = delta.get(cid, {})
-            before = entry.get("before")
-            change = entry.get("change", "")
-            rows += f"""      <tr>
-        <td>{_h(cid)}</td>
-        <td>{_h(c.get('title'))}</td>
-        <td>{_status_pill(before) if before else '<span class="pill new">NEW</span>'}</td>
-        <td>{_status_pill(c.get('status', ''))}</td>
-        <td>{_change_pill(change)}</td>
-        <td class="detail">{_h(c.get('detail', ''))}</td>
-      </tr>\n"""
-        else:
-            rows += f"""      <tr>
-        <td>{_h(cid)}</td>
-        <td>{_h(c.get('title'))}</td>
-        <td>{_status_pill(c.get('status', ''))}</td>
-        <td class="detail">{_h(c.get('detail', ''))}</td>
-      </tr>\n"""
+    score = int(summary.get("score", 0))
+    comp = int(summary.get("compliance_score", summary.get("score", 0)))
+    verdict, vcls = _verdict(score)
+    p = int(summary.get("pass", 0))
+    w = int(summary.get("warn", 0))
+    f = int(summary.get("fail", 0))
+    m = int(summary.get("manual", 0))
+    s = int(summary.get("skip", 0))
+    total = int(summary.get("total", p + w + f + m + s))
+
+    host_name = _h(host.get("name", "unknown"))
+    fail_clause = (f"<strong>{f}</strong> failed (auto-fixable)" if f
+                   else "<strong>0</strong> failed")
+    manual_clause = (f", and <strong>{m}</strong> need manual review" if m else "")
+    exec_summary = (
+        f"Audited <strong>{total}</strong> CIS-aligned controls on {host_name} "
+        f"({_human_ts(ts)}). <strong>{p}</strong> passed, {fail_clause}{manual_clause}. "
+        f"Overall hardened score <strong>{score}%</strong>."
+    )
 
     return f"""<!doctype html>
 <html lang="en">
 <head>
 <meta charset="utf-8"/>
 <meta name="viewport" content="width=device-width,initial-scale=1"/>
-<title>LSS Audit Report — {_h(host.get('name', 'unknown'))}</title>
+<title>LSS Audit Report — {host_name}</title>
 <style>
   :root {{
-    --bg: #ffffff;
-    --ink: #1c2330;
-    --ink2: #5b6675;
-    --line: #e7ebf1;
-    --surface: #f2f5f9;
-    --pass: #0c8a5a;
-    --pass-bg: #dff7ec;
-    --warn: #8a6300;
-    --warn-bg: #fff1d6;
-    --fail: #b3263a;
-    --fail-bg: #fde2e6;
-    --manual: #8a5a00;
-    --manual-bg: #fff4d6;
-    --blue: #2a5fcc;
+    --bg:#ffffff; --ink:#161c26; --ink2:#5b6675; --ink3:#8a94a3;
+    --line:#e7ebf1; --surface:#f5f7fa; --accent:#0b6e6e;
+    --good:#0c8a5a; --good-bg:#e4f7ee; --warn:#9a6b00; --warn-bg:#fff3d6;
+    --bad:#c02a3e; --bad-bg:#fde3e7; --manual:#9a5a00; --manual-bg:#fff1da; --blue:#2a5fcc;
   }}
-  * {{ box-sizing: border-box; margin: 0; padding: 0; }}
-  body {{
-    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-    font-size: 14px; line-height: 1.5; color: var(--ink);
-    max-width: 960px; margin: 0 auto; padding: 40px 28px;
-  }}
-  .header {{
-    display: flex; justify-content: space-between; align-items: flex-start;
-    border-bottom: 3px solid var(--ink); padding-bottom: 20px; margin-bottom: 32px;
-  }}
-  .header h1 {{ font-size: 22px; letter-spacing: -0.01em; }}
-  .header .meta {{ text-align: right; font-size: 12px; color: var(--ink2);
-    font-family: 'Courier New', monospace; }}
-  .stat-row {{
-    display: grid; grid-template-columns: repeat(6, 1fr); gap: 12px; margin-bottom: 32px;
-  }}
-  .stat {{
-    text-align: center; padding: 16px 8px; border-radius: 8px; background: var(--surface);
-  }}
-  .stat .n {{ font-size: 28px; font-weight: 700; }}
-  .stat .l {{ font-size: 11px; text-transform: uppercase; letter-spacing: 0.08em;
-    color: var(--ink2); margin-top: 4px; }}
-  .stat.ok .n {{ color: var(--pass); }}
-  .stat.warn .n {{ color: var(--warn); }}
-  .stat.bad .n {{ color: var(--fail); }}
-  .stat.manual .n {{ color: var(--manual); }}
-  table {{
-    width: 100%; border-collapse: collapse; font-size: 13px; margin-bottom: 32px;
-  }}
-  th {{
-    text-align: left; padding: 10px 10px; background: var(--surface);
-    font-size: 11px; text-transform: uppercase; letter-spacing: 0.08em;
-    color: var(--ink2); font-weight: 600; border-bottom: 2px solid var(--line);
-  }}
-  td {{
-    padding: 10px 10px; border-bottom: 1px solid var(--line);
-  }}
-  td.detail {{ color: var(--ink2); font-family: 'Courier New', monospace; font-size: 12px; }}
-  .pill {{
-    display: inline-block; padding: 2px 10px; border-radius: 4px;
-    font-size: 11px; font-weight: 600; letter-spacing: 0.04em;
-  }}
-  .pill.pass {{ background: var(--pass-bg); color: var(--pass); }}
-  .pill.warn {{ background: var(--warn-bg); color: var(--warn); }}
-  .pill.fail {{ background: var(--fail-bg); color: var(--fail); }}
-  .pill.manual {{ background: var(--manual-bg); color: var(--manual); }}
-  .pill.skip {{ background: var(--surface); color: var(--ink2); }}
-  .pill.new {{ background: #e7eefe; color: var(--blue); }}
-  .pill.change-fixed {{ background: var(--pass-bg); color: var(--pass); }}
-  .pill.change-improved {{ background: var(--warn-bg); color: var(--warn); }}
-  .pill.change-regressed {{ background: var(--fail-bg); color: var(--fail); }}
-  .pill.change-still {{ background: var(--surface); color: var(--ink2); }}
-  .pill.change-new {{ background: #e7eefe; color: var(--blue); }}
-  .delta-row {{
-    display: grid; grid-template-columns: repeat(4, 1fr); gap: 16px; margin-bottom: 24px;
-  }}
-  .delta-row .stat.fixed .n {{ color: var(--pass); }}
-  .delta-row .stat.improved .n {{ color: var(--warn); }}
-  .delta-row .stat.regressed .n {{ color: var(--fail); }}
-  .delta-row .stat.still .n {{ color: var(--warn); }}
-  .delta-row .stat.unchanged .n {{ color: var(--ink2); }}
-  .section-label {{
-    font-size: 11px; text-transform: uppercase; letter-spacing: 0.08em;
-    color: var(--ink2); font-weight: 600; margin: 24px 0 8px 0;
-  }}
-  .footer {{
-    border-top: 1px solid var(--line); padding-top: 16px; margin-top: 40px;
-    font-size: 12px; color: var(--ink2);
-  }}
-  @media print {{
-    body {{ padding: 20px; }}
-    .stat-row {{ break-inside: avoid; }}
-    tr {{ break-inside: avoid; }}
-  }}
+  * {{ box-sizing:border-box; margin:0; padding:0; }}
+  body {{ font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Inter,sans-serif;
+    font-size:14px; line-height:1.55; color:var(--ink); background:var(--bg);
+    max-width:920px; margin:0 auto; padding:48px 32px; }}
+  .eyebrow {{ font-size:11px; text-transform:uppercase; letter-spacing:.14em;
+    color:var(--accent); font-weight:700; margin-bottom:6px; }}
+  .header {{ display:flex; justify-content:space-between; align-items:flex-start;
+    border-bottom:1px solid var(--line); padding-bottom:22px; margin-bottom:28px; }}
+  .header h1 {{ font-size:25px; letter-spacing:-.02em; font-weight:700; }}
+  .header .meta {{ text-align:right; font-size:12px; color:var(--ink2); line-height:1.7; }}
+  .verdict {{ display:flex; align-items:center; gap:24px; padding:22px 26px; border-radius:14px;
+    border:1px solid var(--line); border-left:6px solid var(--ink2); margin-bottom:14px; }}
+  .verdict.good {{ border-left-color:var(--good); background:var(--good-bg); }}
+  .verdict.warn {{ border-left-color:var(--warn); background:var(--warn-bg); }}
+  .verdict.bad {{ border-left-color:var(--bad); background:var(--bad-bg); }}
+  .verdict .score {{ font-size:46px; font-weight:800; letter-spacing:-.03em; line-height:1; }}
+  .verdict.good .score {{ color:var(--good); }} .verdict.warn .score {{ color:var(--warn); }}
+  .verdict.bad .score {{ color:var(--bad); }}
+  .verdict .word {{ font-size:13px; text-transform:uppercase; letter-spacing:.1em; font-weight:700;
+    margin-top:6px; color:var(--ink2); }}
+  .verdict .track {{ height:9px; border-radius:6px; background:rgba(0,0,0,.08); overflow:hidden; margin:8px 0 4px; }}
+  .verdict .fill {{ height:100%; border-radius:6px; }}
+  .verdict.good .fill {{ background:var(--good); }} .verdict.warn .fill {{ background:var(--warn); }}
+  .verdict.bad .fill {{ background:var(--bad); }}
+  .verdict .sub {{ font-size:12px; color:var(--ink2); }}
+  .summary {{ font-size:15px; color:var(--ink); margin:18px 2px 30px; line-height:1.6; }}
+  .stat-row {{ display:grid; grid-template-columns:repeat(5,1fr); gap:10px; margin-bottom:34px; }}
+  .stat {{ text-align:center; padding:14px 8px; border-radius:10px; background:var(--surface); }}
+  .stat .n {{ font-size:24px; font-weight:700; }}
+  .stat .l {{ font-size:10px; text-transform:uppercase; letter-spacing:.08em; color:var(--ink2); margin-top:3px; }}
+  .stat.ok .n {{ color:var(--good); }} .stat.warn .n {{ color:var(--warn); }}
+  .stat.bad .n {{ color:var(--bad); }} .stat.manual .n {{ color:var(--manual); }} .stat.skip .n {{ color:var(--ink3); }}
+  .section-label {{ font-size:12px; text-transform:uppercase; letter-spacing:.09em; color:var(--ink);
+    font-weight:700; margin:34px 0 12px; padding-bottom:8px; border-bottom:2px solid var(--line); }}
+  .lead {{ color:var(--ink2); margin-bottom:14px; max-width:680px; }}
+  .ok-note {{ color:var(--good); font-weight:600; }}
+  code {{ font-family:'JetBrains Mono','SF Mono',Menlo,monospace; font-size:12px;
+    background:var(--surface); padding:1px 6px; border-radius:5px; }}
+  pre.cmd {{ font-family:'JetBrains Mono','SF Mono',Menlo,monospace; font-size:13px; color:#e6f1ef;
+    background:#10211f; padding:12px 16px; border-radius:9px; margin-bottom:16px; }}
+  table.grid {{ width:100%; border-collapse:collapse; font-size:13px; margin-bottom:8px; }}
+  table.grid th {{ text-align:left; padding:9px 10px; font-size:10px; text-transform:uppercase;
+    letter-spacing:.08em; color:var(--ink2); font-weight:600; border-bottom:2px solid var(--line); }}
+  table.grid td {{ padding:9px 10px; border-bottom:1px solid var(--line); vertical-align:top; }}
+  td.cid {{ font-family:'JetBrains Mono',Menlo,monospace; font-size:12px; color:var(--ink2); white-space:nowrap; }}
+  td.detail, td.rem {{ color:var(--ink2); font-size:12.5px; }}
+  tr.sec td {{ background:var(--surface); font-weight:700; font-size:11px; text-transform:uppercase;
+    letter-spacing:.07em; color:var(--accent); padding:8px 10px; border-bottom:1px solid var(--line); }}
+  .pill {{ display:inline-block; padding:2px 9px; border-radius:5px; font-size:10px; font-weight:700; letter-spacing:.04em; }}
+  .pill.pass {{ background:var(--good-bg); color:var(--good); }}
+  .pill.warn {{ background:var(--warn-bg); color:var(--warn); }}
+  .pill.fail {{ background:var(--bad-bg); color:var(--bad); }}
+  .pill.manual {{ background:var(--manual-bg); color:var(--manual); }}
+  .pill.skip {{ background:var(--surface); color:var(--ink3); }}
+  .pill.new {{ background:#e7eefe; color:var(--blue); }}
+  .pill.change-fixed {{ background:var(--good-bg); color:var(--good); }}
+  .pill.change-improved {{ background:var(--warn-bg); color:var(--warn); }}
+  .pill.change-regressed {{ background:var(--bad-bg); color:var(--bad); }}
+  .pill.change-still {{ background:var(--surface); color:var(--ink2); }}
+  .pill.change-new {{ background:#e7eefe; color:var(--blue); }}
+  .cov {{ margin-bottom:14px; }}
+  .cov-row {{ display:grid; grid-template-columns:200px 1fr 56px; align-items:center; gap:14px; padding:5px 0; }}
+  .cov-name {{ font-size:13px; color:var(--ink); }}
+  .cov-track {{ height:9px; border-radius:6px; background:var(--surface); overflow:hidden; }}
+  .cov-fill {{ height:100%; border-radius:6px; }}
+  .cov-fill.good {{ background:var(--good); }} .cov-fill.warn {{ background:var(--warn); }} .cov-fill.bad {{ background:var(--bad); }}
+  .cov-n {{ text-align:right; font-size:12px; color:var(--ink2); font-family:'JetBrains Mono',Menlo,monospace; }}
+  .delta-row {{ display:grid; grid-template-columns:repeat(4,1fr); gap:14px; margin-bottom:8px; }}
+  .delta-row .stat.fixed .n {{ color:var(--good); }} .delta-row .stat.improved .n {{ color:var(--warn); }}
+  .delta-row .stat.regressed .n {{ color:var(--bad); }} .delta-row .stat.still .n {{ color:var(--warn); }}
+  .delta-row .stat.unchanged .n {{ color:var(--ink2); }}
+  .footer {{ border-top:1px solid var(--line); padding-top:16px; margin-top:44px; font-size:11.5px; color:var(--ink3); }}
+  @media print {{ body {{ padding:24px; }} .verdict,.stat,tr,.cov-row {{ break-inside:avoid; }} tr.sec {{ break-after:avoid; }} }}
 </style>
 </head>
 <body>
 
 <div class="header">
   <div>
-    <div style="font-size:12px;text-transform:uppercase;letter-spacing:0.1em;color:var(--ink2);margin-bottom:6px;font-weight:600">
-      Hardening Audit Report
-    </div>
-    <h1>{_h(host.get('name', 'unknown'))}</h1>
+    <div class="eyebrow">CIS Hardening Audit</div>
+    <h1>{host_name}</h1>
   </div>
   <div class="meta">
-    {_h(ts)}<br/>
+    {_human_ts(ts)}<br/>
     Linux Security Suite v{_h(__version__)}<br/>
-    Kernel: {_h(host.get('kernel', 'unknown'))}
+    Kernel {_h(host.get('kernel', 'unknown'))}
   </div>
 </div>
 
+<div class="verdict {vcls}">
+  <div><div class="score">{score}%</div><div class="word">{_h(verdict)}</div></div>
+  <div style="flex:1">
+    <div class="track"><div class="fill" style="width:{score}%"></div></div>
+    <div class="sub">Hardened score &nbsp;·&nbsp; {comp}% full compliance (incl. manual-review items)</div>
+  </div>
+</div>
+
+<p class="summary">{exec_summary}</p>
+
 <div class="stat-row">
-  <div class="stat ok"><div class="n">{int(summary.get('pass', 0))}</div><div class="l">Pass</div></div>
-  <div class="stat warn"><div class="n">{int(summary.get('warn', 0))}</div><div class="l">Warn</div></div>
-  <div class="stat bad"><div class="n">{int(summary.get('fail', 0))}</div><div class="l">Fail</div></div>
-  <div class="stat manual"><div class="n">{int(summary.get('manual', 0))}</div><div class="l">Manual</div></div>
-  <div class="stat ok"><div class="n">{int(summary.get('score', 0))}%</div><div class="l">Hardened</div></div>
-  <div class="stat"><div class="n">{int(summary.get('compliance_score', summary.get('score', 0)))}%</div><div class="l">Compliance</div></div>
+  <div class="stat ok"><div class="n">{p}</div><div class="l">Pass</div></div>
+  <div class="stat warn"><div class="n">{w}</div><div class="l">Warn</div></div>
+  <div class="stat bad"><div class="n">{f}</div><div class="l">Fail</div></div>
+  <div class="stat manual"><div class="n">{m}</div><div class="l">Manual</div></div>
+  <div class="stat skip"><div class="n">{s}</div><div class="l">N/A</div></div>
 </div>
 
 {_delta_block_html(delta_summary, baseline_data)}
 
-<table>
-  <thead>
-{_table_head_html(delta is not None)}
-  </thead>
-  <tbody>
-{rows}  </tbody>
-</table>
+{_priority_html(controls)}
+
+{_manual_html(controls)}
+
+{_coverage_html(controls)}
+
+<div class="section-label">Full results</div>
+{_full_table_html(controls, delta)}
 
 <div class="footer">
-  Generated {now} by The Linux Security Suite
+  Generated {now} by The Linux Security Suite v{_h(__version__)} · read-only audit · no data leaves this host
 </div>
 
 </body>
