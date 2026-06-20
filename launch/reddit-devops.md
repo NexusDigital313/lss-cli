@@ -32,7 +32,7 @@ What's interesting from an ops perspective:
 
 CIS alignment: full Debian 12 v1.0.0 Level 1 Server profile, plus 3 LSS-namespaced custom controls (LSS-001/002/003) clearly labeled as non-CIS so anyone cross-referencing the official PDF doesn't get surprised.
 
-What's NOT in v0.3: per-control unit test coverage (engine has 14 smoke tests, control implementations have 0 yet), distro-aware skip on more than the crypto-policy check, and an attorney-drafted EULA. v1.0 ships when those are done. Honest beta.
+What v1.0 ships with: per-control test coverage across every control (989 passing, 58 skipped) on top of the engine smoke + rollback regression tests. Still on the roadmap and stated plainly: config-drift detection, broader distro-aware skips, RHEL/Rocky support (v1.1), and an attorney-drafted EULA for the Enterprise tier — the current LICENSE is a defensible placeholder.
 
 Source is readable for evaluation — git clone + run the audit without buying anything. Pay only if you want the harden/rollback/report subcommands in production.
 
@@ -43,4 +43,4 @@ Landing page: https://linuxsecuritysuite.com
 ## Notes
 
 - r/devops will pick at the architecture more than the marketing. Lean into the technical detail.
-- Expected questions: "How does it handle config drift?" (it doesn't yet — flag it as a v0.4 item), "Why not Ansible/Salt?" (LSS is the *what*, not the *how* — Ansible can call it), "Does it work on RHEL?" (planned for v1.1).
+- Expected questions: "How does it handle config drift?" (it doesn't yet — a v1.1 roadmap item), "Why not Ansible/Salt?" (LSS is the *what*, not the *how* — Ansible can call it), "Does it work on RHEL?" (planned for v1.1).
