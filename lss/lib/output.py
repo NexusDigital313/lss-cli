@@ -80,54 +80,27 @@ _section_idx = 0
 # ---------------------------------------------------------------------------
 # Banner
 # ---------------------------------------------------------------------------
-# LSS wordmark (ANSI Shadow). Kept deliberately tight — a clean block letterform,
-# not a sprawling hacker-toy splash.
-_BANNER_LINES = [
-    "██╗     ███████╗███████╗",
-    "██║     ██╔════╝██╔════╝",
-    "██║     ███████╗███████╗",
-    "██║     ╚════██║╚════██║",
-    "███████╗███████║███████║",
-    "╚══════╝╚══════╝╚══════╝",
-]
-_BANNER_INDENT = "  "
-# vertical cyan gradient, top → bottom (the settled look)
-_BANNER_GRAD = ["bright_cyan", "bright_cyan", "cyan", "cyan", "deep_sky_blue1", "dodger_blue2"]
-
-
-def _banner_block(styles: list[str]) -> Text:
-    """Render the LSS block with a per-line style list (len 6)."""
-    t = Text()
-    for line, style in zip(_BANNER_LINES, styles):
-        t.append(_BANNER_INDENT + line + "\n", style=f"bold {style}")
-    return t
-
-
-def _banner_subtitle():
-    """The tagline + version line that sits under the block."""
+def _banner_line(name_style: str, ver_style: str):
+    """One frame of the wordmark: 'Linux Security Suite' + version."""
     from lss import __version__
     grid = Table.grid(expand=True)
     grid.add_column(justify="left")
     grid.add_column(justify="right")
-    left = Text(_BANNER_INDENT)
-    left.append("Linux Security Suite", style="bold grey85")
-    left.append("   audit · harden · roll back", style="grey50")
-    grid.add_row(left, Text(f"v{__version__}  ", style="grey50"))
+    grid.add_row(Text("  Linux Security Suite", style=f"bold {name_style}"),
+                 Text(f"v{__version__}  ", style=ver_style))
     return grid
 
 
 def print_banner_art():
-    """LSS ASCII wordmark + tagline + version (static)."""
+    """Clean one-line wordmark — sober, monochrome, no logo splash."""
     console.print()
-    console.print(_banner_block(_BANNER_GRAD))
-    console.print(_banner_subtitle())
+    console.print(_banner_line("grey93", "grey50"))
     console.print(Rule(style="grey30"))
 
 
 def banner_fade(subtitle: str | None = None):
-    """Fade the wordmark in — ramp the block from near-black up to the settled
-    cyan gradient over ~0.4s. Falls back to the static banner on a non-TTY
-    (recordings, pipes, CI) so output stays clean.
+    """Fade the wordmark in with a subtle brightness ramp (monochrome — no
+    color). Falls back to the static banner on a non-TTY (pipes, CI).
     """
     if not console.is_terminal:
         print_banner_art()
@@ -137,17 +110,12 @@ def banner_fade(subtitle: str | None = None):
         return
 
     import time
-    ramp = [
-        ["grey15"] * 6, ["grey23"] * 6, ["grey35"] * 6,
-        ["grey50"] * 6, ["deep_sky_blue4"] * 6, ["dodger_blue2"] * 6,
-        _BANNER_GRAD,                                   # final settled gradient
-    ]
+    ramp = ["grey19", "grey35", "grey50", "grey66", "grey82", "grey93"]
     console.print()
     with Live(console=console, refresh_per_second=30, transient=False) as live:
-        for styles in ramp:
-            live.update(_banner_block(styles))
-            time.sleep(0.06)
-    console.print(_banner_subtitle())
+        for style in ramp:
+            live.update(_banner_line(style, "grey42"))
+            time.sleep(0.05)
     console.print(Rule(style="grey30"))
     if subtitle:
         console.print(f"  [grey50]{subtitle}[/]")
