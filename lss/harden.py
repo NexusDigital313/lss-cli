@@ -137,6 +137,7 @@ def run_harden(args) -> int:
 
     journal_entries: dict[str, list[dict]] = {}
     applied = skipped = failed = would_fix = declined = 0
+    aborted = False
 
     for ctrl in controls:
         if ctrl.check is None or ctrl.fix is None:
@@ -145,6 +146,9 @@ def run_harden(args) -> int:
         # Check first — only fix what's broken
         try:
             result = ctrl.check()
+        except KeyboardInterrupt:
+            aborted = True
+            break
         except Exception as exc:
             print_result(ctrl.id, ctrl.title, "fail", f"check error: {exc}")
             failed += 1
@@ -204,6 +208,15 @@ def run_harden(args) -> int:
                 {"action": e.action, "undo": e.undo, "path": e.path, "backup": e.backup}
                 for e in rollback_entries
             ]
+            # Flush the journal incrementally so a hard kill (SIGKILL / OOM /
+            # power loss) part-way through a run still leaves a rollback record
+            # for every change applied so far — the in-memory dict alone would
+            # be lost. Best-effort: a flush failure must not abort the run, and
+            # the authoritative write_run() still runs at the end.
+            try:
+                journal.write_run(run_id, journal_entries)
+            except Exception:
+                pass
 
             verify = ctrl.check()
             if verify.status == "pass":
@@ -224,6 +237,14 @@ def run_harden(args) -> int:
                 )
                 applied += 1
 
+        except KeyboardInterrupt:
+            # Ctrl-C mid-fix in a non-interactive --confirm run. The control
+            # whose fix was interrupted may be half-applied; everything before
+            # it is already journaled (incremental flush above). Stop here and
+            # fall through to the authoritative journal write + summary so the
+            # operator gets a usable `rollback --last` instead of a traceback.
+            aborted = True
+            break
         except Exception as exc:
             print_result(ctrl.id, ctrl.title, "fail", f"fix error: {exc}")
             syslog.err(f"harden fix run_id={run_id} control={ctrl.id} error={exc!r}")
@@ -237,6 +258,11 @@ def run_harden(args) -> int:
 
     # Interactive summary appended below the standard one.
     interactive_note = f"   Declined: {declined}" if interactive else ""
+
+    if aborted:
+        print()
+        err("Aborted by operator (Ctrl-C) — writing the rollback journal for "
+            "changes applied so far. Undo with: sudo lss rollback --last")
 
     # Always write the journal, even when no changes were made — this gives
     # `lss rollback --last` a stable meaning (an empty run is a no-op, not a
@@ -256,4 +282,6 @@ def run_harden(args) -> int:
     else:
         info("Nothing to harden — all controls already passed.")
 
+    if aborted:
+        return 130  # 128 + SIGINT
     return failed

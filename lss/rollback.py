@@ -10,7 +10,7 @@ import shutil
 import subprocess
 from pathlib import Path
 
-from lss.lib import journal, syslog
+from lss.lib import journal, syslog, sshd
 from lss.lib.output import info, header, err, warn, GREEN, RED, YELLOW, DIM, RESET
 
 
@@ -92,6 +92,7 @@ def run_rollback(args) -> int:
     header("Rollback")
 
     errors = 0
+    sshd_touched = False
     # Iterate controls in reverse application order so that when multiple
     # controls modified the same file, the LAST control's undo runs first.
     # If the OUTER loop runs forward, an early control's `rm -f` deletes
@@ -136,6 +137,20 @@ def run_rollback(args) -> int:
 
             if not did_something and action:
                 warn(f"  {control_id}   no backup or undo for: {action}")
+
+            # An SSH config file was reverted on disk, but the RUNNING sshd
+            # still holds the hardened settings until it is reloaded. Harden
+            # reloads on apply; rollback must too, or the revert looks done
+            # while the live daemon keeps enforcing the old rules.
+            if path.startswith("/etc/ssh"):
+                sshd_touched = True
+
+    if sshd_touched:
+        if sshd.reload_sshd():
+            info("reloaded sshd so the reverted SSH config is live on the running daemon")
+        else:
+            warn("reverted SSH config on disk but could not reload sshd — "
+                 "run from the console: sudo systemctl reload ssh")
 
     print()
     if errors:

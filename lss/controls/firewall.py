@@ -334,7 +334,17 @@ def _check_ip6tables_default_deny() -> CheckResult:
     has_forward_drop = "-P FORWARD DROP" in rules or "-P FORWARD REJECT" in rules
     if has_input_drop and has_forward_drop:
         return CheckResult("pass")
-    return CheckResult("fail", "ip6tables default policy is not DROP")
+    # Report "manual" (not "fail") so harden never auto-applies this — setting
+    # INPUT/FORWARD to DROP before the loopback + ESTABLISHED + SSH allow-rules
+    # (which sort after this control) severs an IPv6 SSH session mid-run. This
+    # mirrors the IPv4 twin 3.5.2.1, which is intentionally defanged for the
+    # exact same reason.
+    return CheckResult(
+        "manual",
+        "ip6tables default policy is not DROP — set it by hand AFTER allowing "
+        "loopback + ESTABLISHED,RELATED + SSH over IPv6, or you will lock "
+        "yourself out remotely",
+    )
 
 
 def _fix_ip6tables_default_deny() -> list[RollbackEntry]:
@@ -364,7 +374,7 @@ register(Control(
     title="Ensure ip6tables default deny firewall policy",
     section="network",
     check=_check_ip6tables_default_deny,
-    fix=_fix_ip6tables_default_deny,
+    fix=None,  # DEFANGED: auto-applying default-deny before the IPv6 allow-rules = remote lockout over IPv6 SSH (see check, and the IPv4 twin 3.5.2.1). Re-enable only with an allow-SSH-first fix verified on a real host.
 ))
 
 

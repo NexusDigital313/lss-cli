@@ -10,9 +10,8 @@ from pathlib import Path
 from lss import __version__
 from lss.lib import distro
 from lss.lib.output import (
-    console, print_summary, print_banner_art, print_fails_table,
+    console, print_summary, banner_fade, stream_scan, print_fails_table,
     print_manuals_table, print_section_breakdown, print_next_steps,
-    audit_progress,
 )
 from lss.lib.registry import get_controls, CheckResult
 
@@ -63,13 +62,13 @@ def run_audit(args) -> int:
     host = distro.detect()
     json_mode = bool(getattr(args, "json", False))
 
-    # In --json mode, suppress all decorative rich output so the JSON on stdout
-    # stays parseable.
-    if not json_mode:
-        print_banner_art()
-
     controls = get_controls(ids=args.control if args.control else None)
     checkable = [c for c in controls if c.check is not None]
+
+    # In --json mode, suppress all decorative rich output so the JSON on stdout
+    # stays parseable. Otherwise: fade in the wordmark, then stream the scan.
+    if not json_mode:
+        banner_fade(subtitle=f"Scanning {len(checkable)} controls · read-only")
 
     results: list[dict] = []
     counts = {"pass": 0, "warn": 0, "fail": 0, "manual": 0, "skip": 0}
@@ -84,16 +83,12 @@ def run_audit(args) -> int:
             "level": ctrl.level, "status": r.status, "detail": r.detail,
         })
         counts[r.status if r.status in counts else "fail"] += 1
+        return r.status, r.detail
 
-    # Live progress while scanning (TTY only) — the "watch it work" beat.
-    # Non-TTY / --json: run the checks silently, no decorative output.
+    # Stream each control's result live as it's checked (TTY only) — the
+    # "watch it work" beat. Non-TTY / --json: run the checks silently.
     if not json_mode and console.is_terminal:
-        with audit_progress() as progress:
-            task = progress.add_task("audit", total=len(checkable), cur="")
-            for ctrl in checkable:
-                progress.update(task, cur=f"{ctrl.id}  {ctrl.title[:36]}")
-                _check(ctrl)
-                progress.update(task, advance=1)
+        stream_scan(checkable, _check)
     else:
         for ctrl in checkable:
             _check(ctrl)

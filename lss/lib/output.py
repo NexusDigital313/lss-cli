@@ -99,6 +99,47 @@ def print_banner_art():
     console.print(Rule(style="grey30"))
 
 
+def _banner_head(title_style: str, chip_bg: str, ver_style: str):
+    """One frame of the wordmark, parameterised by style for the fade ramp."""
+    from lss import __version__
+    head = Table.grid(expand=True)
+    head.add_column(justify="left")
+    head.add_column(justify="right")
+    left = Text()
+    left.append(" lss ", style=f"bold black on {chip_bg}")
+    left.append("  Linux Security Suite", style=f"bold {title_style}")
+    head.add_row(left, Text(f"v{__version__}", style=ver_style))
+    return head
+
+
+def banner_fade(subtitle: str | None = None):
+    """Elegant fade-in wordmark: ramp the title brightness and let the cyan
+    chip emerge from the background over ~0.35s. Falls back to the static
+    banner on a non-TTY (recordings, pipes, CI) so output stays clean.
+    """
+    if not console.is_terminal:
+        print_banner_art()
+        if subtitle:
+            console.print(f"  [grey50]{subtitle}[/]")
+            console.print()
+        return
+
+    import time
+    title_ramp = ["grey11", "grey19", "grey30", "grey42", "grey58", "grey74", "grey85"]
+    chip_ramp  = ["grey15", "grey23", "grey35", "deep_sky_blue4", "dodger_blue2", "cyan", "bright_cyan"]
+    ver_ramp   = ["grey11", "grey15", "grey23", "grey30", "grey37", "grey42", "grey50"]
+
+    console.print()
+    with Live(console=console, refresh_per_second=30, transient=False) as live:
+        for i in range(len(title_ramp)):
+            live.update(_banner_head(title_ramp[i], chip_ramp[i], ver_ramp[i]))
+            time.sleep(0.05)
+    console.print(Rule(style="grey30"))
+    if subtitle:
+        console.print(f"  [grey50]{subtitle}[/]")
+        console.print()
+
+
 # ---------------------------------------------------------------------------
 # Host info panel
 # ---------------------------------------------------------------------------
@@ -157,6 +198,38 @@ def print_result(control_id: str, title: str, status: str, detail: str = ""):
     if detail:
         line += f"   [grey50]({detail})[/]"
     console.print(line)
+
+
+def stream_scan(checkable, check_fn):
+    """Watch-it-work scan: run each control and stream its result live,
+    grouped under elegant section headers.
+
+    `check_fn(ctrl)` runs the check (recording results/counts in the caller)
+    and returns (status, detail) so the line renders as the check completes.
+    Controls are ordered by CIS section then id so the stream reads top-down
+    instead of jumping between sections. A small per-line delay keeps the
+    scan visibly streaming even when individual checks are instant; set
+    LSS_NO_ANIM=1 (or pipe to a non-TTY) to disable the pacing.
+    """
+    import os
+    import time
+
+    animate = console.is_terminal and not os.environ.get("LSS_NO_ANIM")
+    order = {s: i for i, s in enumerate(_SECTION_LABELS)}
+    ordered = sorted(checkable, key=lambda c: (order.get(c.section, len(order)), c.id))
+
+    last_section = None
+    for ctrl in ordered:
+        if ctrl.section != last_section:
+            if last_section is not None and animate:
+                time.sleep(0.05)
+            section_header(ctrl.section)
+            last_section = ctrl.section
+        status, detail = check_fn(ctrl)
+        print_result(ctrl.id, ctrl.title, status, detail)
+        if animate:
+            time.sleep(0.007)
+    console.print()
 
 
 # ---------------------------------------------------------------------------
