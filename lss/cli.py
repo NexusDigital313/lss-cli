@@ -292,8 +292,14 @@ def main(argv: list[str] | None = None):
         sys.exit(1)
 
     # Banner is decorative — suppress in --json so stdout stays parseable.
-    if not getattr(args, "json", False):
-        banner()
+    # audit renders its own animated banner inside run_audit (banner_fade);
+    # harden/rollback get the full ASCII wordmark; report keeps the slim line.
+    if not getattr(args, "json", False) and args.command != "audit":
+        if args.command in ("harden", "rollback"):
+            from lss.lib.output import print_banner_art
+            print_banner_art()
+        else:
+            banner()
 
     # License gate — only applying hardening (`harden --confirm`) is paid.
     # Free, by design: `audit`, `report`, `list`, `harden --dry-run` (preview),
