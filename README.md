@@ -176,14 +176,27 @@ If you're a Fortune 500 buying through procurement, buy OpenSCAP or InSpec. If y
 
 ---
 
-## License
+## License & activation
 
 LSS is commercial software. See [LICENSE](LICENSE) for the full terms.
 
-The codebase ships with a license-key gate (`lss/lib/license.py`) currently in
-permissive bootstrap mode — every command runs without a key but a one-time
-notice is printed. The gate is wired so an operator can flip enforcement on by
-setting a license-verify endpoint URL and the `LSS_ENFORCE_LICENSE` env var.
+- **Free:** `audit`, `report`, `list`, and `harden --dry-run` (preview) — no key needed.
+- **Paid:** applying changes with `harden --confirm` requires an activated license key.
+- **Always free:** `rollback` — the undo path is never withheld, so a lapsed license can
+  never trap a host in a hardened state.
+
+```bash
+# after purchase, activate the key on the host (one online call, then cached):
+sudo lss license activate <YOUR-KEY>
+sudo lss license status            # check this host's license
+sudo lss license deactivate        # release the seat (e.g. before decommissioning)
+```
+
+Activation is validated against Lemon Squeezy and cached to `/etc/lss/license.json`; the
+binary then works **offline** (re-validates every 14 days when reachable, and honors the
+cached validation for up to 90 days fully offline). Key resolution order:
+`--license-key` → `LSS_LICENSE_KEY` → `/etc/lss/license.key`. Enforcement is on by default;
+set `LSS_ENFORCE_LICENSE=0` to disable it for self-hosting / development.
 
 ---
 

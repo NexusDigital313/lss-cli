@@ -33,6 +33,19 @@ default-deny control is now audit-only — see below.
   under section headers, instead of hiding the scan behind a transient progress bar. Set
   `LSS_NO_ANIM=1` (or pipe to a non-TTY / use `--json`) to disable the animation.
 
+### Added (licensing)
+
+- **Real license enforcement** via Lemon Squeezy. The free tier — `audit`, `report`, `list`,
+  and `harden --dry-run` (preview) — is never gated. Applying changes (`harden --confirm`)
+  requires a valid, activated license key. **`rollback` is deliberately free**: the undo path
+  must never be withheld, or a lapsed license could trap a host in a hardened state.
+- New `lss license activate <KEY>` / `lss license status` / `lss license deactivate`.
+  Activation makes one online call, then caches to `/etc/lss/license.json` (or `~/.config/lss/`)
+  so the binary keeps working offline — re-validates online every 14 days when reachable, and
+  honors the cached validation for up to 90 days fully offline.
+- Enforcement is on by default; `LSS_ENFORCE_LICENSE=0` disables it for self-hosting / dev.
+  Key resolution order: `--license-key` → `LSS_LICENSE_KEY` → `/etc/lss/license.key`.
+
 ## [1.0.0] — 2026-04-30
 
 Initial public release.
