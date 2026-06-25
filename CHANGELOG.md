@@ -5,6 +5,34 @@ All notable changes to LSS will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project follows [Semantic Versioning](https://semver.org/).
 
+## [1.0.1] — 2026-06-25
+
+Safety hardening of the harden/rollback path, plus a redesigned audit experience.
+No change to the control set; auto-fix count is 166 (was 167) because the IPv6
+default-deny control is now audit-only — see below.
+
+### Fixed (lockout / data-loss safety)
+
+- **IPv6 firewall lockout (3.5.3.1).** `ip6tables` default-deny was auto-applied
+  while its IPv4 twin (3.5.2.1) was deliberately audit-only. Setting INPUT/FORWARD
+  to DROP before the loopback / ESTABLISHED / SSH allow-rules (which sort after it)
+  could sever an IPv6 SSH session mid-harden. `3.5.3.1` is now `fix=None` and its
+  check returns `manual`, mirroring `3.5.2.1`. **Auto-fix count 167 → 166.**
+- **Rollback journal could be lost on a hard stop.** The journal was written only at
+  the end of a run, so a `SIGKILL`/OOM/power loss or `Ctrl-C` during a non-interactive
+  `--confirm` lost the rollback record for every change already applied. The journal is
+  now flushed incrementally after each control, and the non-interactive loop is guarded
+  with `KeyboardInterrupt` → save partial journal and exit 130.
+- **Rollback now reloads sshd.** Reverting an `/etc/ssh/*` file restored it on disk but
+  left the running daemon enforcing the hardened settings until a manual reload. Rollback
+  now reloads sshd after restoring any SSH config so the revert takes effect immediately.
+
+### Changed (audit UX)
+
+- `lss audit` now **fades in the wordmark and streams each control's result live**, grouped
+  under section headers, instead of hiding the scan behind a transient progress bar. Set
+  `LSS_NO_ANIM=1` (or pipe to a non-TTY / use `--json`) to disable the animation.
+
 ## [1.0.0] — 2026-04-30
 
 Initial public release.

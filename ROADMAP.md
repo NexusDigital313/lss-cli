@@ -1,4 +1,4 @@
-# LSS Roadmap — work to elevate v1.0.0 toward $10k-tier ship
+# LSS Roadmap — work to elevate v1.0.1 toward $10k-tier ship
 
 Compiled 2026-05-01 from in-session discussion. Items are tiered by impact at the $10k commercial-sale tier (vendor security review, regulated-industry buyer). Add to this list each session; do not ship until the P0 block is closed.
 

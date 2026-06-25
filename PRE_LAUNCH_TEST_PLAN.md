@@ -1,6 +1,6 @@
 # Pre-launch test plan
 
-What to verify on a real Debian 12 host before sending v1.0.0 to a paying customer. This checklist exists because the per-control fixes have not all been individually exercised against a clean install.
+What to verify on a real Debian 12 host before sending v1.0.1 to a paying customer. This checklist exists because the per-control fixes have not all been individually exercised against a clean install.
 
 ## Where to run this
 
@@ -14,7 +14,7 @@ Do NOT run this on the Kali Live host where LSS was developed — too many contr
 
 ```bash
 # Copy the wheel onto the host
-scp /home/kali/00-Active-Products/LSS/Build/lss-1.0.0-py3-none-any.whl \
+scp /home/kali/00-Active-Products/LSS/Build/lss-1.0.1-py3-none-any.whl \
     /home/kali/00-Active-Products/LSS/Build/SHA256SUMS \
     debian@<host>:~/
 
@@ -25,7 +25,7 @@ sha256sum -c SHA256SUMS
 # Install
 sudo apt update && sudo apt install -y python3-pip python3-venv
 python3 -m venv ~/lss-venv
-~/lss-venv/bin/pip install ~/lss-1.0.0-py3-none-any.whl
+~/lss-venv/bin/pip install ~/lss-1.0.1-py3-none-any.whl
 sudo ln -sf ~/lss-venv/bin/lss /usr/local/sbin/lss
 ```
 
@@ -33,7 +33,7 @@ sudo ln -sf ~/lss-venv/bin/lss /usr/local/sbin/lss
 
 ```bash
 # 1. Version + counts
-sudo lss --version                                # should print: lss 1.0.0
+sudo lss --version                                # should print: lss 1.0.1
 sudo lss list | tail -3                           # should report: 206 controls
 
 # 2. Read-only audit baseline — capture this for the delta later
@@ -76,7 +76,7 @@ sudo lss audit
 
 ## Targeted checks for the BLOCKER-class bugs we just fixed
 
-These confirm the v1.0.0 QA pass actually closed the holes it claims to close.
+These confirm the v1.0.1 QA pass actually closed the holes it claims to close.
 
 ### 5.3.2 (faillock) — must NOT cosmetic-pass
 ```bash

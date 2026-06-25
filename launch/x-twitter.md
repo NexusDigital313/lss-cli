@@ -12,7 +12,7 @@ card) once the page is public and a scraper has hit it — for the very first po
 ```
 Your server is one default away from a breach.
 
-LSS audits your Debian / Ubuntu / Kali box against 206 CIS controls, auto-fixes 167 of
+LSS audits your Debian / Ubuntu / Kali box against 206 CIS controls, auto-fixes 166 of
 them, and journals every change — so a bad hardening pass is one command away from reversed.
 
 Launching soon:
@@ -34,7 +34,7 @@ Launching soon:
 
 ```
 2/  It audits 206 CIS Benchmark controls on Debian, Ubuntu, and Kali in about two minutes,
-    read-only. Then, on request, it auto-fixes 167 of them — writing every change to a
+    read-only. Then, on request, it auto-fixes 166 of them — writing every change to a
     rollback journal as it goes.
 ```
 
