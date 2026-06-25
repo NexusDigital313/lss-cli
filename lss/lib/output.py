@@ -80,42 +80,56 @@ _section_idx = 0
 # ---------------------------------------------------------------------------
 # Banner
 # ---------------------------------------------------------------------------
-def _banner_line(name_style: str, ver_style: str):
-    """One frame of the wordmark: 'Linux Security Suite' + version."""
+_BANNER_ART = r"""
+ _     _                     ____                       _ _
+| |   (_)_ __  _   ___  __  / ___|  ___  ___ _   _ _ __(_) |_ _   _
+| |   | | '_ \| | | \ \/ /  \___ \ / _ \/ __| | | | '__| | __| | | |
+| |___| | | | | |_| |>  <    ___) |  __/ (__| |_| | |  | | |_| |_| |
+|_____|_|_| |_|\__,_/_/\_\  |____/ \___|\___|\__,_|_|  |_|\__|\__, |
+                                                              |___/
+ ____        _ _
+/ ___| _   _(_) |_ ___
+\___ \| | | | | __/ _ \
+ ___) | |_| | | ||  __/
+|____/ \__,_|_|\__\___|
+"""
+
+
+def _banner_centered(style):
+    return Align.center(Text(_BANNER_ART, style=f"bold {style}"))
+
+
+def _banner_tagline():
     from lss import __version__
-    grid = Table.grid(expand=True)
-    grid.add_column(justify="left")
-    grid.add_column(justify="right")
-    grid.add_row(Text("  Linux Security Suite", style=f"bold {name_style}"),
-                 Text(f"v{__version__}  ", style=ver_style))
-    return grid
+    return Align.center(Text(f"audit · harden · roll back        v{__version__}", style="grey50"))
 
 
 def print_banner_art():
-    """Clean one-line wordmark — sober, monochrome, no logo splash."""
+    """Big, centered 'Linux Security Suite' wordmark."""
     console.print()
-    console.print(_banner_line("grey93", "grey50"))
+    console.print(_banner_centered("grey93"))
+    console.print()
+    console.print(_banner_tagline())
     console.print(Rule(style="grey30"))
 
 
-def banner_fade(subtitle: str | None = None):
-    """Fade the wordmark in with a subtle brightness ramp (monochrome — no
-    color). Falls back to the static banner on a non-TTY (pipes, CI).
-    """
+def banner_fade(subtitle=None):
+    """Fade the big wordmark in (monochrome brightness ramp), centered."""
     if not console.is_terminal:
         print_banner_art()
         if subtitle:
             console.print(f"  [grey50]{subtitle}[/]")
             console.print()
         return
-
     import time
-    ramp = ["grey19", "grey35", "grey50", "grey66", "grey82", "grey93"]
+    ramp = ["grey15", "grey27", "grey39", "grey54", "grey70", "grey85", "grey93"]
     console.print()
     with Live(console=console, refresh_per_second=30, transient=False) as live:
         for style in ramp:
-            live.update(_banner_line(style, "grey42"))
-            time.sleep(0.05)
+            live.update(_banner_centered(style))
+            time.sleep(0.06)
+    console.print()
+    console.print(_banner_tagline())
     console.print(Rule(style="grey30"))
     if subtitle:
         console.print(f"  [grey50]{subtitle}[/]")
