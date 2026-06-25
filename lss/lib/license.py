@@ -148,7 +148,9 @@ def _ls_post(action: str, params: dict) -> dict:
         method="POST",
     )
     try:
-        with urllib.request.urlopen(req, timeout=HTTP_TIMEOUT) as resp:
+        # nosec B310 — URL is the fixed https Lemon Squeezy API constant (LS_API),
+        # never user-controlled, so no file:/custom-scheme risk.
+        with urllib.request.urlopen(req, timeout=HTTP_TIMEOUT) as resp:  # nosec B310
             return json.loads(resp.read().decode())
     except urllib.error.HTTPError as exc:
         # Lemon Squeezy returns 4xx with a JSON error body for a bad/invalid key

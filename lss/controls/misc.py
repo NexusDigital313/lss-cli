@@ -275,7 +275,7 @@ def _fix_aide_cron() -> list[RollbackEntry]:
     p = Path("/etc/cron.daily/aide")
     bkp = journal.backup_file(str(p))
     p.write_text(_AIDE_CRON_DAILY)
-    os.chmod(str(p), 0o755)
+    os.chmod(str(p), 0o755)  # nosec B103 — a /etc/cron.daily script must be executable (0755)
     return [RollbackEntry(
         action="installed /etc/cron.daily/aide for periodic integrity check",
         path=str(p),
