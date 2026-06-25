@@ -29,6 +29,31 @@ python3 -m venv ~/lss-venv
 sudo ln -sf ~/lss-venv/bin/lss /usr/local/sbin/lss
 ```
 
+## License gate (2 minutes)
+
+Free tier (`audit`, `report`, `list`, `harden --dry-run`, `rollback`) needs no key —
+only `harden --confirm` is gated. Verify enforcement:
+
+```bash
+# 1. Blocked without a key
+sudo lss harden --confirm --control 5.4.5     # EXIT 2, "applying hardening requires a license"
+
+# 2. A bad key is rejected online (not a network error)
+sudo lss license activate NOT-A-REAL-KEY      # "license_key not found"
+
+# 3. A real key activates (use a Lemon Squeezy TEST-mode key)
+sudo lss license activate <TEST-KEY>
+sudo lss license status                       # "license valid (...)"
+sudo lss harden --confirm --control 5.4.5     # now allowed
+
+# 4. rollback is ALWAYS free — even after deactivation
+sudo lss license deactivate
+sudo lss rollback --last                      # still works; undo is never gated
+```
+
+> For the smoke test below, keep a key activated **or** `export LSS_ENFORCE_LICENSE=0`
+> so `harden --confirm` isn't gated during QA.
+
 ## The smoke test (5 minutes)
 
 ```bash
