@@ -80,45 +80,26 @@ _section_idx = 0
 # ---------------------------------------------------------------------------
 # Banner
 # ---------------------------------------------------------------------------
-_BANNER_ART = r"""
-            ██      ██ ███    ██ ██    ██ ██   ██
-            ██      ██ ████   ██ ██    ██  ██ ██
-             ██      ██ ██ ██  ██ ██    ██   ███
-            ██      ██ ██  ██ ██ ██    ██  ██ ██
-            ███████ ██ ██   ████  ██████  ██   ██
-███████ ███████  ██████ ██    ██ ██████  ██ ████████ ██    ██
-██      ██      ██      ██    ██ ██   ██ ██    ██     ██  ██
- ███████ █████   ██      ██    ██ ██████  ██    ██      ████
-      ██ ██      ██      ██    ██ ██   ██ ██    ██       ██
- ███████ ███████  ██████  ██████  ██   ██ ██    ██       ██
-            ███████ ██    ██ ██ ████████ ███████
-               ██      ██    ██ ██    ██    ██
-             ███████ ██    ██ ██    ██    █████
-                    ██ ██    ██ ██    ██    ██
-            ███████  ██████  ██    ██    ███████
-"""
-
-
-def _banner_centered(style):
-    return Align.center(Text(_BANNER_ART, style=f"bold {style}"))
-
-
-def _banner_tagline():
+def _banner_line(name_style, ver_style):
+    """One frame of the wordmark: 'Linux Security Suite' + version."""
     from lss import __version__
-    return Align.center(Text(f"audit · harden · roll back        v{__version__}", style="grey50"))
+    grid = Table.grid(expand=True)
+    grid.add_column(justify="left")
+    grid.add_column(justify="right")
+    grid.add_row(Text("  Linux Security Suite", style=f"bold {name_style}"),
+                 Text(f"v{__version__}  ", style=ver_style))
+    return grid
 
 
 def print_banner_art():
-    """Big, centered 'Linux Security Suite' wordmark."""
+    """Clean one-line wordmark."""
     console.print()
-    console.print(_banner_centered("grey93"))
-    console.print()
-    console.print(_banner_tagline())
+    console.print(_banner_line("grey93", "grey50"))
     console.print(Rule(style="grey30"))
 
 
 def banner_fade(subtitle=None):
-    """Fade the big wordmark in (monochrome brightness ramp), centered."""
+    """Fade the wordmark in with a subtle monochrome brightness ramp."""
     if not console.is_terminal:
         print_banner_art()
         if subtitle:
@@ -126,15 +107,12 @@ def banner_fade(subtitle=None):
             console.print()
         return
     import time
-    ramp = ["grey11", "grey19", "grey27", "grey35", "grey46",
-            "grey54", "grey62", "grey74", "grey85", "grey93"]
+    ramp = ["grey23", "grey39", "grey54", "grey70", "grey85", "grey93"]
     console.print()
     with Live(console=console, refresh_per_second=30, transient=False) as live:
         for style in ramp:
-            live.update(_banner_centered(style))
-            time.sleep(0.13)
-    console.print()
-    console.print(_banner_tagline())
+            live.update(_banner_line(style, "grey42"))
+            time.sleep(0.08)
     console.print(Rule(style="grey30"))
     if subtitle:
         console.print(f"  [grey50]{subtitle}[/]")
