@@ -104,7 +104,8 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def banner():
-    print(f"{BOLD}{BLUE}  ▸ Linux Security Suite{RESET} v{__version__}")
+    from lss.lib.output import print_banner_art
+    print_banner_art()
 
 
 def _print_help_all():
@@ -293,13 +294,9 @@ def main(argv: list[str] | None = None):
 
     # Banner is decorative — suppress in --json so stdout stays parseable.
     # audit renders its own animated banner inside run_audit (banner_fade);
-    # harden/rollback get the full ASCII wordmark; report keeps the slim line.
+    # everything else gets the static ASCII wordmark via banner().
     if not getattr(args, "json", False) and args.command != "audit":
-        if args.command in ("harden", "rollback"):
-            from lss.lib.output import print_banner_art
-            print_banner_art()
-        else:
-            banner()
+        banner()
 
     # License gate — only applying hardening (`harden --confirm`) is paid.
     # Free, by design: `audit`, `report`, `list`, `harden --dry-run` (preview),
