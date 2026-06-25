@@ -51,7 +51,7 @@ def run_list() -> int:
     for ctrl in ordered:
         if ctrl.section != last:
             if last is not None and animate:
-                time.sleep(0.05)
+                time.sleep(0.12)
             section_header(ctrl.section)
             last = ctrl.section
         if ctrl.fix is not None:
@@ -60,7 +60,7 @@ def run_list() -> int:
             mark, idc, tag = "[grey42]○[/]", "grey58", "[grey42]audit-only[/]"
         console.print(f"  {mark} [{idc} bold]{ctrl.id:<9s}[/] [grey74]{ctrl.title}[/]   {tag}")
         if animate:
-            time.sleep(0.006)
+            time.sleep(0.016)
 
     console.print()
     console.print(f"  [bold]{len(controls)}[/] controls   "

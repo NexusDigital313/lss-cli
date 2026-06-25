@@ -81,17 +81,21 @@ _section_idx = 0
 # Banner
 # ---------------------------------------------------------------------------
 _BANNER_ART = r"""
- _     _                     ____                       _ _
-| |   (_)_ __  _   ___  __  / ___|  ___  ___ _   _ _ __(_) |_ _   _
-| |   | | '_ \| | | \ \/ /  \___ \ / _ \/ __| | | | '__| | __| | | |
-| |___| | | | | |_| |>  <    ___) |  __/ (__| |_| | |  | | |_| |_| |
-|_____|_|_| |_|\__,_/_/\_\  |____/ \___|\___|\__,_|_|  |_|\__|\__, |
-                                                              |___/
- ____        _ _
-/ ___| _   _(_) |_ ___
-\___ \| | | | | __/ _ \
- ___) | |_| | | ||  __/
-|____/ \__,_|_|\__\___|
+            ██      ██ ███    ██ ██    ██ ██   ██
+            ██      ██ ████   ██ ██    ██  ██ ██
+             ██      ██ ██ ██  ██ ██    ██   ███
+            ██      ██ ██  ██ ██ ██    ██  ██ ██
+            ███████ ██ ██   ████  ██████  ██   ██
+███████ ███████  ██████ ██    ██ ██████  ██ ████████ ██    ██
+██      ██      ██      ██    ██ ██   ██ ██    ██     ██  ██
+ ███████ █████   ██      ██    ██ ██████  ██    ██      ████
+      ██ ██      ██      ██    ██ ██   ██ ██    ██       ██
+ ███████ ███████  ██████  ██████  ██   ██ ██    ██       ██
+            ███████ ██    ██ ██ ████████ ███████
+               ██      ██    ██ ██    ██    ██
+             ███████ ██    ██ ██    ██    █████
+                    ██ ██    ██ ██    ██    ██
+            ███████  ██████  ██    ██    ███████
 """
 
 
@@ -122,12 +126,13 @@ def banner_fade(subtitle=None):
             console.print()
         return
     import time
-    ramp = ["grey15", "grey27", "grey39", "grey54", "grey70", "grey85", "grey93"]
+    ramp = ["grey11", "grey19", "grey27", "grey35", "grey46",
+            "grey54", "grey62", "grey74", "grey85", "grey93"]
     console.print()
     with Live(console=console, refresh_per_second=30, transient=False) as live:
         for style in ramp:
             live.update(_banner_centered(style))
-            time.sleep(0.06)
+            time.sleep(0.13)
     console.print()
     console.print(_banner_tagline())
     console.print(Rule(style="grey30"))
@@ -218,13 +223,13 @@ def stream_scan(checkable, check_fn):
     for ctrl in ordered:
         if ctrl.section != last_section:
             if last_section is not None and animate:
-                time.sleep(0.05)
+                time.sleep(0.12)
             section_header(ctrl.section)
             last_section = ctrl.section
         status, detail = check_fn(ctrl)
         print_result(ctrl.id, ctrl.title, status, detail)
         if animate:
-            time.sleep(0.007)
+            time.sleep(0.016)
     console.print()
 
 
