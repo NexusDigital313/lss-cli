@@ -154,6 +154,25 @@ def banner_fade(subtitle=None):
 
 
 # ---------------------------------------------------------------------------
+# Marker legend — Prowler-style one-line key so the status tags read instantly
+# ---------------------------------------------------------------------------
+def print_legend():
+    t = Text("  ")
+    t.append("key  ", style=C_FAINT)
+    for marker, mstyle, label in (
+        ("[+]", C_GREEN_B, "pass"),
+        ("[x]", C_RED, "fixable"),
+        ("[!]", C_AMBER, "warn"),
+        ("[~]", C_GOLD, "manual"),
+        ("[-]", C_DIM, "n/a"),
+    ):
+        t.append(f"{marker} ", style=f"bold {mstyle}")
+        t.append(f"{label}   ", style=C_MUTE)
+    console.print(t)
+    console.print()
+
+
+# ---------------------------------------------------------------------------
 # Host info panel
 # ---------------------------------------------------------------------------
 def print_host_info(host_name: str, hostname: str, kernel: str, uptime: str, control_count: int):
