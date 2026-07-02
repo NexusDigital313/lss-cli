@@ -2,7 +2,7 @@
 
 **Audit, harden, and roll back Linux hosts against the CIS Benchmark — with a safety net.**
 
-[![Version](https://img.shields.io/badge/version-1.0.1-blue.svg)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-1.0.2-blue.svg)](CHANGELOG.md)
 [![License](https://img.shields.io/badge/license-Commercial-lightgrey.svg)](LICENSE)
 [![Python](https://img.shields.io/badge/python-3.10%2B-blue.svg)](https://www.python.org/downloads/)
 
