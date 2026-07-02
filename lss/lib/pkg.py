@@ -52,10 +52,13 @@ def is_installed(pkg: str) -> bool:
     that doesn't have it (FileNotFoundError would crash the caller).
     """
     if distro.is_debian_family():
-        r = subprocess.run(
-            ["dpkg-query", "-W", "-f=${Status}", pkg],
-            capture_output=True, text=True,
-        )
+        try:
+            r = subprocess.run(
+                ["dpkg-query", "-W", "-f=${Status}", pkg],
+                capture_output=True, text=True,
+            )
+        except FileNotFoundError:
+            return False
         return r.returncode == 0 and "install ok installed" in r.stdout
     if distro.is_rhel_family():
         try:

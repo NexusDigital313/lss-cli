@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 import subprocess
 from pathlib import Path
 
@@ -28,12 +29,31 @@ def _persist_ip6tables_v6() -> None:
 
 
 def _cmd_exists(name: str) -> bool:
-    r = subprocess.run(["which", name], capture_output=True, text=True)
+    try:
+        r = subprocess.run(["which", name], capture_output=True, text=True)
+    except FileNotFoundError:
+        return False
     return r.returncode == 0
 
 
+def _ipv6_disabled() -> bool:
+    """True only if we can confirm IPv6 is disabled. If sysctl is absent we
+    cannot confirm, so return False (never assume disabled → never false-pass)."""
+    try:
+        r = subprocess.run(
+            ["sysctl", "-n", "net.ipv6.conf.all.disable_ipv6"],
+            capture_output=True, text=True,
+        )
+    except FileNotFoundError:
+        return False
+    return r.stdout.strip() == "1"
+
+
 def _iptables_rules() -> str:
-    r = subprocess.run(["iptables", "-S"], capture_output=True, text=True)
+    try:
+        r = subprocess.run(["iptables", "-S"], capture_output=True, text=True)
+    except FileNotFoundError:
+        return ""
     return r.stdout if r.returncode == 0 else ""
 
 
@@ -56,12 +76,18 @@ def _persist_iptables_v4() -> None:
 
 
 def _ip6tables_rules() -> str:
-    r = subprocess.run(["ip6tables", "-S"], capture_output=True, text=True)
+    try:
+        r = subprocess.run(["ip6tables", "-S"], capture_output=True, text=True)
+    except FileNotFoundError:
+        return ""
     return r.stdout if r.returncode == 0 else ""
 
 
 def _nft_ruleset() -> str:
-    r = subprocess.run(["nft", "list", "ruleset"], capture_output=True, text=True)
+    try:
+        r = subprocess.run(["nft", "list", "ruleset"], capture_output=True, text=True)
+    except FileNotFoundError:
+        return ""
     return r.stdout if r.returncode == 0 else ""
 
 
@@ -175,11 +201,13 @@ def _input_reachable_chains(rules: str) -> set[str]:
             continue
         chain = toks[1]
         if "-j" in toks:
-            tgt = toks[toks.index("-j") + 1]
-            jumps.setdefault(chain, set()).add(tgt)
+            i = toks.index("-j")
+            if i + 1 < len(toks):
+                jumps.setdefault(chain, set()).add(toks[i + 1])
         if "-g" in toks:
-            tgt = toks[toks.index("-g") + 1]
-            jumps.setdefault(chain, set()).add(tgt)
+            i = toks.index("-g")
+            if i + 1 < len(toks):
+                jumps.setdefault(chain, set()).add(toks[i + 1])
     reachable: set[str] = {"INPUT"}
     stack = ["INPUT"]
     while stack:
@@ -251,9 +279,13 @@ def _check_iptables_established() -> CheckResult:
     if not _cmd_exists("iptables"):
         return CheckResult("warn", "iptables not available")
     rules = _iptables_rules()
-    if "ESTABLISHED" in rules:
-        return CheckResult("pass")
-    return CheckResult("fail", "no ESTABLISHED connection rule found")
+    # Require an actual INPUT ACCEPT rule for ESTABLISHED traffic, not merely
+    # the word "ESTABLISHED" appearing anywhere (e.g. in a LOG rule or a
+    # comment, or on an unrelated chain).
+    for line in rules.splitlines():
+        if line.startswith("-A INPUT") and "ESTABLISHED" in line and "ACCEPT" in line:
+            return CheckResult("pass")
+    return CheckResult("fail", "no INPUT ACCEPT rule for ESTABLISHED connections found")
 
 
 def _fix_iptables_established() -> list[RollbackEntry]:
@@ -291,7 +323,10 @@ def _check_iptables_open_ports() -> CheckResult:
     if not _cmd_exists("iptables"):
         return CheckResult("warn", "iptables not available")
     # Get listening ports
-    r = subprocess.run(["ss", "-H", "-tlnp"], capture_output=True, text=True)
+    try:
+        r = subprocess.run(["ss", "-H", "-tlnp"], capture_output=True, text=True)
+    except FileNotFoundError:
+        return CheckResult("warn", "cannot enumerate listening ports (ss not available)")
     listeners = set()
     for line in r.stdout.splitlines():
         parts = line.split()
@@ -303,7 +338,17 @@ def _check_iptables_open_ports() -> CheckResult:
     rules = _iptables_rules()
     uncovered = []
     for port in sorted(listeners):
-        if port not in rules and f"--dport {port}" not in rules:
+        if not port.isdigit():
+            continue
+        # Match the port as a whole token in a --dport or --dports (multiport)
+        # rule. The old bare `port not in rules` substring suppressed the
+        # warning whenever the digits appeared ANYWHERE — e.g. inside an IP
+        # address or another port number — hiding genuinely uncovered ports.
+        covered = (
+            re.search(rf"--dport\s+{port}\b", rules)
+            or re.search(rf"--dports\s+\S*\b{port}\b", rules)
+        )
+        if not covered:
             uncovered.append(port)
 
     if not uncovered:
@@ -326,8 +371,7 @@ def _check_ip6tables_default_deny() -> CheckResult:
     if not _cmd_exists("ip6tables"):
         return CheckResult("warn", "ip6tables not available")
     # If IPv6 is disabled, this is N/A
-    r = subprocess.run(["sysctl", "-n", "net.ipv6.conf.all.disable_ipv6"], capture_output=True, text=True)
-    if r.stdout.strip() == "1":
+    if _ipv6_disabled():
         return CheckResult("pass", "IPv6 is disabled")
     rules = _ip6tables_rules()
     has_input_drop = "-P INPUT DROP" in rules or "-P INPUT REJECT" in rules
@@ -383,8 +427,7 @@ register(Control(
 def _check_ip6tables_loopback() -> CheckResult:
     if not _cmd_exists("ip6tables"):
         return CheckResult("warn", "ip6tables not available")
-    r = subprocess.run(["sysctl", "-n", "net.ipv6.conf.all.disable_ipv6"], capture_output=True, text=True)
-    if r.stdout.strip() == "1":
+    if _ipv6_disabled():
         return CheckResult("pass", "IPv6 is disabled")
     rules = _ip6tables_rules()
     if "-A INPUT -i lo -j ACCEPT" in rules:
@@ -437,8 +480,7 @@ register(Control(
 def _check_ip6tables_established() -> CheckResult:
     if not _cmd_exists("ip6tables"):
         return CheckResult("warn", "ip6tables not available")
-    r = subprocess.run(["sysctl", "-n", "net.ipv6.conf.all.disable_ipv6"], capture_output=True, text=True)
-    if r.stdout.strip() == "1":
+    if _ipv6_disabled():
         return CheckResult("pass", "IPv6 is disabled")
     rules = _ip6tables_rules()
     if "ESTABLISHED" in rules:
@@ -486,12 +528,18 @@ def _check_iptables_persistent() -> CheckResult:
         if Path(path).exists():
             return CheckResult("pass")
     # Check if iptables-persistent is installed
-    r = subprocess.run(["dpkg-query", "-W", "iptables-persistent"], capture_output=True, text=True)
-    if r.returncode == 0 and "install ok installed" in r.stdout:
-        return CheckResult("pass")
-    r2 = subprocess.run(["rpm", "-q", "iptables-services"], capture_output=True, text=True)
-    if r2.returncode == 0:
-        return CheckResult("pass")
+    try:
+        r = subprocess.run(["dpkg-query", "-W", "iptables-persistent"], capture_output=True, text=True)
+        if r.returncode == 0 and "install ok installed" in r.stdout:
+            return CheckResult("pass")
+    except FileNotFoundError:
+        pass
+    try:
+        r2 = subprocess.run(["rpm", "-q", "iptables-services"], capture_output=True, text=True)
+        if r2.returncode == 0:
+            return CheckResult("pass")
+    except FileNotFoundError:
+        pass
     return CheckResult("warn", "no persistent iptables rules found — rules may not survive reboot")
 
 
@@ -537,7 +585,10 @@ register(Control(
 # ---- CIS 3.5.5: Ensure unused network interfaces are disabled ----
 
 def _check_unused_interfaces() -> CheckResult:
-    r = subprocess.run(["ip", "-o", "link", "show", "up"], capture_output=True, text=True)
+    try:
+        r = subprocess.run(["ip", "-o", "link", "show", "up"], capture_output=True, text=True)
+    except FileNotFoundError:
+        return CheckResult("warn", "cannot enumerate interfaces (ip not available)")
     up_interfaces = []
     for line in r.stdout.splitlines():
         parts = line.split(":")
@@ -563,7 +614,10 @@ register(Control(
 # ---- CIS 3.6: Ensure wireless interfaces are disabled ----
 
 def _check_wireless_disabled() -> CheckResult:
-    r = subprocess.run(["ip", "link", "show"], capture_output=True, text=True)
+    try:
+        r = subprocess.run(["ip", "link", "show"], capture_output=True, text=True)
+    except FileNotFoundError:
+        return CheckResult("warn", "cannot enumerate interfaces (ip not available)")
     wireless = []
     for line in r.stdout.splitlines():
         if "wlan" in line or "wlp" in line:

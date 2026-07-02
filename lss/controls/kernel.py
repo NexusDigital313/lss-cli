@@ -38,9 +38,13 @@ def _check_ptrace() -> CheckResult:
     val = _get_sysctl("kernel.yama.ptrace_scope")
     if val is None:
         return CheckResult("warn", "yama module not loaded")
-    if int(val) >= 1:
+    try:
+        n = int(val)
+    except ValueError:
+        return CheckResult("fail", f"ptrace_scope={val}")
+    if n >= 1:
         return CheckResult("pass")
-    return CheckResult("fail", f"ptrace_scope={val}, recommended: ≥ 1")
+    return CheckResult("fail", f"ptrace_scope={n}, recommended: ≥ 1")
 
 
 def _fix_ptrace() -> list[RollbackEntry]:
@@ -196,20 +200,58 @@ _DISABLED_NET_MODULES = [
 ]
 
 
+def _module_is_loaded(mod: str) -> bool:
+    """True if `mod` is loaded now, matching the module name exactly."""
+    try:
+        r = subprocess.run(["lsmod"], capture_output=True, text=True)
+    except FileNotFoundError:
+        return False
+    for line in r.stdout.splitlines()[1:]:  # skip header
+        parts = line.split()
+        if parts and parts[0] == mod:
+            return True
+    return False
+
+
+def _module_blacklisted(mod: str) -> bool:
+    """True if an uncommented modprobe.d directive disables exactly `mod`.
+
+    Token-matches so `blacklist sctp_probe` never satisfies a check for `sctp`,
+    and commented example lines are ignored (the old `grep blacklist {mod}` did
+    both wrong)."""
+    d = Path("/etc/modprobe.d")
+    if not d.is_dir():
+        return False
+    for conf in d.glob("*"):
+        try:
+            text = conf.read_text()
+        except OSError:
+            continue
+        for line in text.splitlines():
+            s = line.strip()
+            if not s or s.startswith("#"):
+                continue
+            toks = s.split()
+            if len(toks) >= 2 and toks[0] == "blacklist" and toks[1] == mod:
+                return True
+            if (len(toks) >= 3 and toks[0] == "install" and toks[1] == mod
+                    and toks[2] in ("/bin/true", "/bin/false")):
+                return True
+    return False
+
+
 def _module_is_disabled(mod: str) -> bool:
     try:
         r = subprocess.run(["modprobe", "-n", "--show-depends", mod], capture_output=True, text=True)
-        if "/bin/true" in r.stdout or "/bin/false" in r.stdout:
-            return True
+        for line in r.stdout.splitlines():
+            toks = line.split()
+            if len(toks) >= 2 and toks[0] == "install" and toks[1] in ("/bin/true", "/bin/false"):
+                return True
     except FileNotFoundError:
         pass
-    try:
-        r = subprocess.run(["grep", "-r", f"blacklist {mod}", "/etc/modprobe.d/"], capture_output=True, text=True)
-        if r.returncode == 0 and r.stdout.strip():
-            return True
-    except FileNotFoundError:
-        pass
-    return False
+    if _module_is_loaded(mod):
+        return False
+    return _module_blacklisted(mod)
 
 
 def _disable_module(mod: str) -> list[RollbackEntry]:

@@ -166,9 +166,11 @@ def _save_results(results: list[dict], host, passes: int, warns: int, fails: int
     out = RESULTS_DIR / f"audit-{ts}.json"
     out.write_text(json.dumps(data, indent=2))
 
-    # Atomic latest-symlink swap (avoids the unlink→symlink race window)
+    # Atomic latest-symlink swap. The intermediate link name is per-process so
+    # two concurrent `lss audit` runs (e.g. cron + manual) don't unlink each
+    # other's temp link and crash one of them on the os.replace below.
     latest = RESULTS_DIR / "audit-latest.json"
-    tmp_link = RESULTS_DIR / "audit-latest.json.new"
+    tmp_link = RESULTS_DIR / f"audit-latest.json.{os.getpid()}.new"
     if tmp_link.exists() or tmp_link.is_symlink():
         tmp_link.unlink()
     tmp_link.symlink_to(out.name)

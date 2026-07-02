@@ -22,16 +22,31 @@ def _systemd_is_enabled(unit: str) -> bool:
 # ---- CIS 4.1.1.1: Ensure auditd is installed ----
 
 def _check_auditd_installed() -> CheckResult:
-    r = subprocess.run(["which", "auditd"], capture_output=True, text=True)
-    if r.returncode == 0:
-        return CheckResult("pass")
+    verified = False
+    try:
+        r = subprocess.run(["which", "auditd"], capture_output=True, text=True)
+        verified = True
+        if r.returncode == 0:
+            return CheckResult("pass")
+    except FileNotFoundError:
+        pass
     # Check package
-    r2 = subprocess.run(["dpkg-query", "-W", "auditd"], capture_output=True, text=True)
-    if r2.returncode == 0:
-        return CheckResult("pass")
-    r3 = subprocess.run(["rpm", "-q", "audit"], capture_output=True, text=True)
-    if r3.returncode == 0:
-        return CheckResult("pass")
+    try:
+        r2 = subprocess.run(["dpkg-query", "-W", "auditd"], capture_output=True, text=True)
+        verified = True
+        if r2.returncode == 0:
+            return CheckResult("pass")
+    except FileNotFoundError:
+        pass
+    try:
+        r3 = subprocess.run(["rpm", "-q", "audit"], capture_output=True, text=True)
+        verified = True
+        if r3.returncode == 0:
+            return CheckResult("pass")
+    except FileNotFoundError:
+        pass
+    if not verified:
+        return CheckResult("warn", "cannot verify auditd installation — no 'which' or package manager available")
     return CheckResult("fail", "auditd is not installed")
 
 
@@ -47,10 +62,13 @@ register(Control(
 # ---- CIS 4.1.1.2: Ensure auditd service is enabled and running ----
 
 def _check_auditd_running() -> CheckResult:
-    if not _systemd_is_enabled("auditd"):
-        return CheckResult("fail", "auditd is not enabled")
-    if not _systemd_is_active("auditd"):
-        return CheckResult("fail", "auditd is not active")
+    try:
+        if not _systemd_is_enabled("auditd"):
+            return CheckResult("fail", "auditd is not enabled")
+        if not _systemd_is_active("auditd"):
+            return CheckResult("fail", "auditd is not active")
+    except FileNotFoundError:
+        return CheckResult("warn", "systemctl not found — cannot verify auditd service state")
     return CheckResult("pass")
 
 
@@ -94,9 +112,13 @@ register(Control(
 
 def _check_audit_log_size() -> CheckResult:
     conf = Path("/etc/audit/auditd.conf")
-    if not conf.exists():
+    try:
+        text = conf.read_text()
+    except FileNotFoundError:
         return CheckResult("warn", "auditd.conf not found")
-    for line in conf.read_text().splitlines():
+    except OSError as e:
+        return CheckResult("warn", f"cannot read auditd.conf: {e}")
+    for line in text.splitlines():
         if line.strip().startswith("max_log_file"):
             parts = line.split("=")
             if len(parts) == 2:
@@ -182,9 +204,13 @@ register(Control(
 
 def _check_audit_log_retention() -> CheckResult:
     conf = Path("/etc/audit/auditd.conf")
-    if not conf.exists():
+    try:
+        text = conf.read_text()
+    except FileNotFoundError:
         return CheckResult("warn", "auditd.conf not found")
-    for line in conf.read_text().splitlines():
+    except OSError as e:
+        return CheckResult("warn", f"cannot read auditd.conf: {e}")
+    for line in text.splitlines():
         stripped = line.strip()
         if stripped.startswith("max_log_file_action"):
             val = stripped.split("=")[1].strip().lower() if "=" in stripped else ""
@@ -235,9 +261,13 @@ register(Control(
 
 def _check_journald_persistent() -> CheckResult:
     conf = Path("/etc/systemd/journald.conf")
-    if not conf.exists():
+    try:
+        text = conf.read_text()
+    except FileNotFoundError:
         return CheckResult("warn", "journald.conf not found")
-    for line in conf.read_text().splitlines():
+    except OSError as e:
+        return CheckResult("warn", f"cannot read journald.conf: {e}")
+    for line in text.splitlines():
         stripped = line.strip()
         if stripped.startswith("Storage="):
             val = stripped.split("=")[1].strip().lower()
@@ -265,19 +295,32 @@ def _fix_journald_persistent() -> list[RollbackEntry]:
         lines.append("Storage=persistent\n")
     conf.write_text("".join(lines))
 
-    # Create the directory
-    Path("/var/log/journal").mkdir(exist_ok=True)
+    # Create the directory. Track whether WE created it: journald treats the
+    # mere existence of /var/log/journal as "persistent" (the check does too),
+    # so if we leave the directory behind on rollback the change is not actually
+    # reversed even after journald.conf is restored.
+    journal_dir = Path("/var/log/journal")
+    created_dir = not journal_dir.exists()
+    journal_dir.mkdir(exist_ok=True)
 
     # Restart journald to pick up the change
     subprocess.run(["systemctl", "restart", "systemd-journald"], capture_output=True)
+
+    # After the file is restored, rollback also needs to restart journald so the
+    # previous setting takes effect again. If we created the directory, remove
+    # it too — `rmdir` only removes an EMPTY directory, so it can never delete
+    # logs journald has since written there (it just no-ops with an error we
+    # surface, which is the safe outcome).
+    undo: list[list[str]] = []
+    if created_dir:
+        undo.append(["rmdir", str(journal_dir)])
+    undo.append(["systemctl", "restart", "systemd-journald"])
 
     return [RollbackEntry(
         action="set journald Storage=persistent",
         path=str(conf),
         backup=bkp,
-        # After the file is restored, rollback also needs to restart journald
-        # so the previous setting takes effect again.
-        undo=[["systemctl", "restart", "systemd-journald"]],
+        undo=undo,
     )]
 
 
@@ -294,9 +337,13 @@ register(Control(
 
 def _check_journald_compress() -> CheckResult:
     conf = Path("/etc/systemd/journald.conf")
-    if not conf.exists():
+    try:
+        text = conf.read_text()
+    except FileNotFoundError:
         return CheckResult("warn", "journald.conf not found")
-    for line in conf.read_text().splitlines():
+    except OSError as e:
+        return CheckResult("warn", f"cannot read journald.conf: {e}")
+    for line in text.splitlines():
         stripped = line.strip()
         if stripped.startswith("Compress="):
             val = stripped.split("=")[1].strip().lower()
@@ -350,15 +397,30 @@ register(Control(
 # ---- CIS 4.2.2.1: Ensure rsyslog is installed ----
 
 def _check_rsyslog() -> CheckResult:
-    r = subprocess.run(["which", "rsyslogd"], capture_output=True, text=True)
-    if r.returncode == 0:
-        return CheckResult("pass")
-    r2 = subprocess.run(["dpkg-query", "-W", "rsyslog"], capture_output=True, text=True)
-    if r2.returncode == 0 and "install ok installed" in r2.stdout:
-        return CheckResult("pass")
-    r3 = subprocess.run(["rpm", "-q", "rsyslog"], capture_output=True, text=True)
-    if r3.returncode == 0:
-        return CheckResult("pass")
+    verified = False
+    try:
+        r = subprocess.run(["which", "rsyslogd"], capture_output=True, text=True)
+        verified = True
+        if r.returncode == 0:
+            return CheckResult("pass")
+    except FileNotFoundError:
+        pass
+    try:
+        r2 = subprocess.run(["dpkg-query", "-W", "rsyslog"], capture_output=True, text=True)
+        verified = True
+        if r2.returncode == 0 and "install ok installed" in r2.stdout:
+            return CheckResult("pass")
+    except FileNotFoundError:
+        pass
+    try:
+        r3 = subprocess.run(["rpm", "-q", "rsyslog"], capture_output=True, text=True)
+        verified = True
+        if r3.returncode == 0:
+            return CheckResult("pass")
+    except FileNotFoundError:
+        pass
+    if not verified:
+        return CheckResult("warn", "cannot verify rsyslog installation — no 'which' or package manager available")
     return CheckResult("warn", "rsyslog not installed — journald may be sole log source")
 
 

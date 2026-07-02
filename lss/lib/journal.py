@@ -98,8 +98,10 @@ def write_run(run_id: str, entries: dict[str, list[dict]]) -> Path:
     _atomic_write(path, json.dumps(data, indent=2))
 
     # Atomically swap the "latest" symlink: write to a temp link, then rename.
+    # The temp link name is per-process so two concurrent runs don't unlink
+    # each other's intermediate link and crash on the os.replace.
     latest = JOURNAL_DIR / "latest.json"
-    tmp_link = JOURNAL_DIR / "latest.json.new"
+    tmp_link = JOURNAL_DIR / f"latest.json.{os.getpid()}.new"
     if tmp_link.exists() or tmp_link.is_symlink():
         tmp_link.unlink()
     tmp_link.symlink_to(path.name)
@@ -118,7 +120,16 @@ def read_run(run_id: str | None = None) -> dict | None:
     if not path.exists():
         return None
 
-    return json.loads(path.read_text())
+    # A corrupt/truncated or hand-edited journal must not crash rollback with a
+    # traceback — return None so the caller reports a clean "unreadable journal"
+    # error and a non-zero exit instead.
+    try:
+        data = json.loads(path.read_text())
+    except (json.JSONDecodeError, OSError, UnicodeDecodeError):
+        return None
+    if not isinstance(data, dict) or "run_id" not in data:
+        return None
+    return data
 
 
 def list_runs() -> list[str]:

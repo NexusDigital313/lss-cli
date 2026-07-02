@@ -8,7 +8,12 @@ from pathlib import Path
 from lss.lib import journal
 from lss.lib.registry import RollbackEntry
 
-SYSCTL_CONF = "/etc/sysctl.d/80-lss.conf"
+# sysctl.d files are applied in lexicographic filename order and the LAST
+# setting for a key wins. Stock Debian/Ubuntu ship /etc/sysctl.d/99-sysctl.conf
+# (a symlink to /etc/sysctl.conf); an 80-* file loses to it, so hardened params
+# silently revert at boot while the immediate `sysctl -w` made the audit pass.
+# A 99-zzz- name sorts after 99-sysctl.conf ('z' > 's'), so LSS wins.
+SYSCTL_CONF = "/etc/sysctl.d/99-zzz-lss.conf"
 
 
 def get_sysctl(key: str) -> str | None:
@@ -29,7 +34,7 @@ def set_sysctl(key: str, value: str) -> RollbackEntry:
     """Set a sysctl value at runtime and persist it in /etc/sysctl.d/.
 
     Returns a RollbackEntry that, on rollback:
-      - restores the previous /etc/sysctl.d/80-lss.conf from backup
+      - restores the previous SYSCTL_CONF from backup
         (which may be empty/absent if the file did not exist before), and
       - replays `sysctl -w` with the previous in-memory value.
     """

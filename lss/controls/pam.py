@@ -55,6 +55,24 @@ def _set_pwquality(key: str, value: int) -> RollbackEntry:
 # ---- CIS 5.3.1: Ensure password creation requirements are configured ----
 # This is a compound check: dcredit, ucredit, lcredit, ocredit
 
+def _pwquality_module_active() -> bool:
+    """True if pam_pwquality.so (or legacy pam_cracklib.so) is loaded by an
+    UNCOMMENTED line in the password PAM stack. pwquality.conf settings are
+    inert unless the module actually references them, so a check that reads only
+    the conf file can pass while nothing is enforced."""
+    for pam_path in ("/etc/pam.d/common-password", "/etc/pam.d/system-auth", "/etc/pam.d/password-auth"):
+        p = Path(pam_path)
+        if not p.exists():
+            continue
+        for line in p.read_text().splitlines():
+            s = line.lstrip()
+            if s.startswith("#") or not s:
+                continue
+            if "pam_pwquality.so" in s or "pam_cracklib.so" in s:
+                return True
+    return False
+
+
 def _check_pw_complexity() -> CheckResult:
     issues = []
     for key, desc, threshold in [
@@ -69,9 +87,20 @@ def _check_pw_complexity() -> CheckResult:
         elif val > threshold:  # negative means "require at least N"
             issues.append(f"{key}={val}, recommended: ≤ {threshold}")
 
-    if not issues:
-        return CheckResult("pass")
-    return CheckResult("fail", "; ".join(issues))
+    if issues:
+        return CheckResult("fail", "; ".join(issues))
+
+    # Values are right, but they only take effect if the module is loaded.
+    if not _pwquality_module_active():
+        return CheckResult(
+            "manual",
+            "pwquality.conf complexity is set but pam_pwquality.so is not loaded "
+            "in the password PAM stack, so it is NOT enforced. On Debian/Ubuntu: "
+            "`sudo apt install libpam-pwquality` then ensure `pam-auth-update` "
+            "wires it into /etc/pam.d/common-password. On RHEL: "
+            "`authselect enable-feature with-pwquality`.",
+        )
+    return CheckResult("pass")
 
 
 def _fix_pw_complexity() -> list[RollbackEntry]:
@@ -353,25 +382,44 @@ register(Control(
 
 # ---- CIS 5.3.5: Ensure password hashing algorithm is SHA-512 ----
 
+_HASH_ALGOS = {"yescrypt", "sha512", "sha256", "md5", "blowfish", "bigcrypt", "des", "gost_yescrypt"}
+_STRONG_HASHES = {"yescrypt", "sha512"}
+
+
 def _check_pw_hash() -> CheckResult:
-    # Check login.defs
+    # A pam_unix.so hashing argument OVERRIDES login.defs ENCRYPT_METHOD, so if
+    # the PAM stack pins an algorithm that is what actually applies. Check the
+    # (uncommented) password stack first, and only the real pam_unix directive —
+    # not a substring anywhere in the file (which matched commented examples).
+    for pam_path in ("/etc/pam.d/common-password", "/etc/pam.d/system-auth", "/etc/pam.d/password-auth"):
+        p = Path(pam_path)
+        if not p.exists():
+            continue
+        for line in p.read_text().splitlines():
+            s = line.strip()
+            if s.startswith("#") or not s or "pam_unix.so" not in s:
+                continue
+            algos = [t.lower() for t in s.split() if t.lower() in _HASH_ALGOS]
+            if algos:
+                if any(a in _STRONG_HASHES for a in algos):
+                    return CheckResult("pass", f"pam_unix uses {algos[0]}")
+                return CheckResult("fail", f"pam_unix hashing={algos[0]}, recommended: sha512 or yescrypt")
+            # pam_unix present with no explicit algo -> it falls back to login.defs.
+            break
+
+    # login.defs ENCRYPT_METHOD (authoritative when pam_unix pins no algorithm).
     login_defs = Path("/etc/login.defs")
     if login_defs.exists():
         for line in login_defs.read_text().splitlines():
             stripped = line.strip()
-            if stripped.startswith("ENCRYPT_METHOD"):
-                val = stripped.split()[1] if len(stripped.split()) > 1 else ""
+            if stripped.startswith("#") or not stripped:
+                continue
+            parts = stripped.split()
+            if parts[0] == "ENCRYPT_METHOD":
+                val = parts[1] if len(parts) > 1 else ""
                 if val.upper() in ("SHA512", "YESCRYPT"):
                     return CheckResult("pass")
                 return CheckResult("fail", f"ENCRYPT_METHOD={val}, recommended: SHA512 or YESCRYPT")
-
-    # Check PAM
-    for pam_path in ["/etc/pam.d/common-password", "/etc/pam.d/system-auth"]:
-        p = Path(pam_path)
-        if p.exists():
-            text = p.read_text()
-            if "sha512" in text or "yescrypt" in text:
-                return CheckResult("pass")
 
     return CheckResult("warn", "could not determine password hashing algorithm")
 

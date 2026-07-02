@@ -11,13 +11,27 @@ from pathlib import Path
 from lss.lib.registry import Control, CheckResult, RollbackEntry, register
 
 
+def _read_lines(path: Path) -> list[str] | None:
+    """Read a file's lines, tolerating absence/unreadability (OSError).
+
+    Returns None when the file cannot be read (missing, or permission denied
+    such as /etc/shadow to a non-root auditor) so callers can degrade to a
+    meaningful warn rather than raising and turning the whole audit into a
+    misleading "check error" line.
+    """
+    try:
+        return path.read_text().splitlines()
+    except OSError:
+        return None
+
+
 # ---- CIS 6.2.3: Ensure all groups in /etc/passwd exist in /etc/group ----
 
 def _check_groups_exist() -> CheckResult:
     import grp
-    passwd = Path("/etc/passwd")
-    if not passwd.exists():
-        return CheckResult("warn", "/etc/passwd not found")
+    lines = _read_lines(Path("/etc/passwd"))
+    if lines is None:
+        return CheckResult("warn", "/etc/passwd not readable")
     group_gids = set()
     try:
         for g in grp.getgrall():
@@ -26,7 +40,7 @@ def _check_groups_exist() -> CheckResult:
         return CheckResult("warn", "could not read /etc/group")
 
     missing = []
-    for line in passwd.read_text().splitlines():
+    for line in lines:
         parts = line.split(":")
         if len(parts) >= 4:
             try:
@@ -52,11 +66,11 @@ register(Control(
 # ---- CIS 6.2.4: Ensure no duplicate UIDs exist ----
 
 def _check_duplicate_uids() -> CheckResult:
-    passwd = Path("/etc/passwd")
-    if not passwd.exists():
-        return CheckResult("warn", "/etc/passwd not found")
+    lines = _read_lines(Path("/etc/passwd"))
+    if lines is None:
+        return CheckResult("warn", "/etc/passwd not readable")
     uid_map: dict[str, list[str]] = {}
-    for line in passwd.read_text().splitlines():
+    for line in lines:
         parts = line.split(":")
         if len(parts) >= 3:
             uid = parts[2]
@@ -80,11 +94,11 @@ register(Control(
 # ---- CIS 6.2.5: Ensure no duplicate GIDs exist ----
 
 def _check_duplicate_gids() -> CheckResult:
-    group = Path("/etc/group")
-    if not group.exists():
-        return CheckResult("warn", "/etc/group not found")
+    lines = _read_lines(Path("/etc/group"))
+    if lines is None:
+        return CheckResult("warn", "/etc/group not readable")
     gid_map: dict[str, list[str]] = {}
-    for line in group.read_text().splitlines():
+    for line in lines:
         parts = line.split(":")
         if len(parts) >= 3:
             gid = parts[2]
@@ -108,11 +122,11 @@ register(Control(
 # ---- CIS 6.2.6: Ensure no duplicate user names exist ----
 
 def _check_duplicate_usernames() -> CheckResult:
-    passwd = Path("/etc/passwd")
-    if not passwd.exists():
-        return CheckResult("warn", "/etc/passwd not found")
+    lines = _read_lines(Path("/etc/passwd"))
+    if lines is None:
+        return CheckResult("warn", "/etc/passwd not readable")
     names: dict[str, int] = {}
-    for line in passwd.read_text().splitlines():
+    for line in lines:
         name = line.split(":")[0]
         names[name] = names.get(name, 0) + 1
     dupes = [n for n, c in names.items() if c > 1]
@@ -133,11 +147,11 @@ register(Control(
 # ---- CIS 6.2.7: Ensure no duplicate group names exist ----
 
 def _check_duplicate_groupnames() -> CheckResult:
-    group = Path("/etc/group")
-    if not group.exists():
-        return CheckResult("warn", "/etc/group not found")
+    lines = _read_lines(Path("/etc/group"))
+    if lines is None:
+        return CheckResult("warn", "/etc/group not readable")
     names: dict[str, int] = {}
-    for line in group.read_text().splitlines():
+    for line in lines:
         name = line.split(":")[0]
         names[name] = names.get(name, 0) + 1
     dupes = [n for n, c in names.items() if c > 1]
@@ -169,7 +183,10 @@ def _check_root_path() -> CheckResult:
             issues.append(f"relative path: {entry}")
             continue
         if p.exists():
-            st = p.stat()
+            try:
+                st = p.stat()
+            except OSError:
+                continue
             if st.st_mode & stat.S_IWGRP:
                 issues.append(f"group-writable: {entry}")
             if st.st_mode & stat.S_IWOTH:
@@ -205,11 +222,11 @@ def _is_service_account(uid: int, user: str, home: str, shell: str) -> bool:
 
 
 def _check_home_dirs_exist() -> CheckResult:
-    passwd = Path("/etc/passwd")
-    if not passwd.exists():
-        return CheckResult("warn", "/etc/passwd not found")
+    lines = _read_lines(Path("/etc/passwd"))
+    if lines is None:
+        return CheckResult("warn", "/etc/passwd not readable")
     missing = []
-    for line in passwd.read_text().splitlines():
+    for line in lines:
         parts = line.split(":")
         if len(parts) >= 7:
             user, _x, uid_str, _g, _gec, home, shell = parts[:7]
@@ -284,11 +301,11 @@ register(Control(
 # ---- CIS 6.2.10: Ensure users own their home directories ----
 
 def _check_home_ownership() -> CheckResult:
-    passwd = Path("/etc/passwd")
-    if not passwd.exists():
-        return CheckResult("warn", "/etc/passwd not found")
+    lines = _read_lines(Path("/etc/passwd"))
+    if lines is None:
+        return CheckResult("warn", "/etc/passwd not readable")
     issues = []
-    for line in passwd.read_text().splitlines():
+    for line in lines:
         parts = line.split(":")
         if len(parts) >= 6:
             user, uid_str, home = parts[0], parts[2], parts[5]
@@ -300,7 +317,10 @@ def _check_home_ownership() -> CheckResult:
                 continue
             p = Path(home)
             if p.exists():
-                st = p.stat()
+                try:
+                    st = p.stat()
+                except OSError:
+                    continue
                 if st.st_uid != uid:
                     issues.append(f"{user}: {home} owned by uid {st.st_uid}")
     if not issues:
@@ -358,11 +378,11 @@ register(Control(
 # ---- CIS 6.2.11: Ensure users' home directory permissions are 750 or more restrictive ----
 
 def _check_home_perms() -> CheckResult:
-    passwd = Path("/etc/passwd")
-    if not passwd.exists():
-        return CheckResult("warn", "/etc/passwd not found")
+    lines = _read_lines(Path("/etc/passwd"))
+    if lines is None:
+        return CheckResult("warn", "/etc/passwd not readable")
     issues = []
-    for line in passwd.read_text().splitlines():
+    for line in lines:
         parts = line.split(":")
         if len(parts) >= 6:
             user, uid_str, home = parts[0], parts[2], parts[5]
@@ -374,7 +394,10 @@ def _check_home_perms() -> CheckResult:
                 continue
             p = Path(home)
             if p.exists():
-                mode = stat.S_IMODE(p.stat().st_mode)
+                try:
+                    mode = stat.S_IMODE(p.stat().st_mode)
+                except OSError:
+                    continue
                 if mode & 0o027:  # more permissive than 750
                     issues.append(f"{user}: {home} mode={oct(mode)}")
     if not issues:
@@ -428,21 +451,46 @@ register(Control(
 
 # ---- CIS 6.2.12: Ensure no users have .forward files ----
 
-def _check_dot_forward() -> CheckResult:
-    passwd = Path("/etc/passwd")
-    if not passwd.exists():
-        return CheckResult("warn", "/etc/passwd not found")
+def _path_exists_safe(p: Path) -> bool | None:
+    """Path.exists() that can't crash the audit. Returns None when existence
+    can't be determined (PermissionError when a home dir isn't traversable),
+    so the caller can degrade to a warn instead of raising or false-passing."""
+    try:
+        return p.exists()
+    except OSError:
+        return None
+
+
+def _check_no_user_dotfile(dotfile: str) -> CheckResult:
+    """Shared check for the .forward/.netrc/.rhosts controls. Fails if the file
+    is found in any readable home; warns if some homes could not be inspected
+    (never passes on an unverified home — a false pass in a security tool is
+    the worst outcome)."""
+    lines = _read_lines(Path("/etc/passwd"))
+    if lines is None:
+        return CheckResult("warn", "/etc/passwd not readable")
     found = []
-    for line in passwd.read_text().splitlines():
+    unverifiable = 0
+    for line in lines:
         parts = line.split(":")
         if len(parts) >= 6:
             user, home = parts[0], parts[5]
-            fwd = Path(home) / ".forward"
-            if fwd.exists():
+            if not home:
+                continue
+            exists = _path_exists_safe(Path(home) / dotfile)
+            if exists is None:
+                unverifiable += 1
+            elif exists:
                 found.append(user)
-    if not found:
-        return CheckResult("pass")
-    return CheckResult("fail", f"users with .forward: {', '.join(found[:5])}")
+    if found:
+        return CheckResult("fail", f"users with {dotfile}: {', '.join(found[:5])}")
+    if unverifiable:
+        return CheckResult("warn", f"could not inspect {unverifiable} home dir(s) for {dotfile} (permission denied)")
+    return CheckResult("pass")
+
+
+def _check_dot_forward() -> CheckResult:
+    return _check_no_user_dotfile(".forward")
 
 
 def _disable_user_dotfile(basename: str) -> list[RollbackEntry]:
@@ -489,20 +537,7 @@ register(Control(
 # ---- CIS 6.2.13: Ensure no users have .netrc files ----
 
 def _check_dot_netrc() -> CheckResult:
-    passwd = Path("/etc/passwd")
-    if not passwd.exists():
-        return CheckResult("warn", "/etc/passwd not found")
-    found = []
-    for line in passwd.read_text().splitlines():
-        parts = line.split(":")
-        if len(parts) >= 6:
-            user, home = parts[0], parts[5]
-            netrc = Path(home) / ".netrc"
-            if netrc.exists():
-                found.append(user)
-    if not found:
-        return CheckResult("pass")
-    return CheckResult("fail", f"users with .netrc: {', '.join(found[:5])}")
+    return _check_no_user_dotfile(".netrc")
 
 
 register(Control(
@@ -517,20 +552,7 @@ register(Control(
 # ---- CIS 6.2.14: Ensure no users have .rhosts files ----
 
 def _check_dot_rhosts() -> CheckResult:
-    passwd = Path("/etc/passwd")
-    if not passwd.exists():
-        return CheckResult("warn", "/etc/passwd not found")
-    found = []
-    for line in passwd.read_text().splitlines():
-        parts = line.split(":")
-        if len(parts) >= 6:
-            user, home = parts[0], parts[5]
-            rhosts = Path(home) / ".rhosts"
-            if rhosts.exists():
-                found.append(user)
-    if not found:
-        return CheckResult("pass")
-    return CheckResult("fail", f"users with .rhosts: {', '.join(found[:5])}")
+    return _check_no_user_dotfile(".rhosts")
 
 
 register(Control(
@@ -545,11 +567,11 @@ register(Control(
 # ---- CIS 6.2.15: Ensure all users have a valid shell ----
 
 def _check_valid_shells() -> CheckResult:
-    shells_file = Path("/etc/shells")
-    if not shells_file.exists():
+    shell_lines = _read_lines(Path("/etc/shells"))
+    if shell_lines is None:
         return CheckResult("warn", "/etc/shells not found")
     valid_shells = set()
-    for line in shells_file.read_text().splitlines():
+    for line in shell_lines:
         line = line.strip()
         if line and not line.startswith("#"):
             valid_shells.add(line)
@@ -558,9 +580,11 @@ def _check_valid_shells() -> CheckResult:
     valid_shells.add("/bin/false")
     valid_shells.add("/sbin/nologin")
 
-    passwd = Path("/etc/passwd")
+    passwd_lines = _read_lines(Path("/etc/passwd"))
+    if passwd_lines is None:
+        return CheckResult("warn", "/etc/passwd not readable")
     issues = []
-    for line in passwd.read_text().splitlines():
+    for line in passwd_lines:
         parts = line.split(":")
         if len(parts) >= 7:
             user, uid_str, shell = parts[0], parts[2], parts[6]
@@ -589,11 +613,11 @@ register(Control(
 # ---- CIS 5.4.2: Ensure no accounts have empty passwords ----
 
 def _check_empty_passwords() -> CheckResult:
-    shadow = Path("/etc/shadow")
-    if not shadow.exists():
-        return CheckResult("warn", "/etc/shadow not found")
+    lines = _read_lines(Path("/etc/shadow"))
+    if lines is None:
+        return CheckResult("warn", "/etc/shadow not readable (root required?)")
     empty = []
-    for line in shadow.read_text().splitlines():
+    for line in lines:
         parts = line.split(":")
         if len(parts) >= 2:
             user, pw = parts[0], parts[1]
@@ -618,10 +642,10 @@ register(Control(
 # ---- CIS 5.4.3: Ensure default group for root is GID 0 ----
 
 def _check_root_default_group() -> CheckResult:
-    passwd = Path("/etc/passwd")
-    if not passwd.exists():
-        return CheckResult("warn", "/etc/passwd not found")
-    for line in passwd.read_text().splitlines():
+    lines = _read_lines(Path("/etc/passwd"))
+    if lines is None:
+        return CheckResult("warn", "/etc/passwd not readable")
+    for line in lines:
         parts = line.split(":")
         if parts[0] == "root" and len(parts) >= 4:
             if parts[3] == "0":

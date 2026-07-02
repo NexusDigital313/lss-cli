@@ -17,7 +17,10 @@ def _check_bootloader_password() -> CheckResult:
     for grub_cfg in ["/boot/grub/grub.cfg", "/boot/grub2/grub.cfg"]:
         p = Path(grub_cfg)
         if p.exists():
-            text = p.read_text()
+            try:
+                text = p.read_text()
+            except OSError:
+                return CheckResult("warn", f"{grub_cfg} exists but could not be read")
             # A real GRUB password needs BOTH a password directive AND a
             # superusers line. Substring-matching "password" false-passes on
             # comments/help text in grub.cfg (a security control reporting
@@ -56,7 +59,10 @@ def _check_grub_perms() -> CheckResult:
     for grub_cfg in ["/boot/grub/grub.cfg", "/boot/grub2/grub.cfg"]:
         p = Path(grub_cfg)
         if p.exists():
-            st = p.stat()
+            try:
+                st = p.stat()
+            except OSError:
+                return CheckResult("warn", f"{grub_cfg} exists but could not be stat'd")
             mode = stat.S_IMODE(st.st_mode)
             if mode & ~0o600:
                 return CheckResult("fail", f"{grub_cfg} mode={oct(mode)}, expected: 0600 or stricter")
@@ -103,7 +109,11 @@ def _check_single_user_auth() -> CheckResult:
     shadow = Path("/etc/shadow")
     if not shadow.exists():
         return CheckResult("warn", "/etc/shadow not found")
-    for line in shadow.read_text().splitlines():
+    try:
+        shadow_text = shadow.read_text()
+    except OSError:
+        return CheckResult("warn", "/etc/shadow could not be read — cannot verify root password")
+    for line in shadow_text.splitlines():
         parts = line.split(":")
         if parts[0] == "root":
             pw = parts[1] if len(parts) > 1 else ""
@@ -132,7 +142,10 @@ register(Control(
 def _check_time_sync() -> CheckResult:
     # Check for chrony, systemd-timesyncd, or ntpd
     for svc in ["chronyd", "chrony", "systemd-timesyncd", "ntpd", "ntp"]:
-        r = subprocess.run(["systemctl", "is-active", svc], capture_output=True, text=True)
+        try:
+            r = subprocess.run(["systemctl", "is-active", svc], capture_output=True, text=True)
+        except FileNotFoundError:
+            return CheckResult("warn", "systemctl not found — cannot verify time synchronization")
         if r.stdout.strip() == "active":
             return CheckResult("pass", f"{svc} is active")
     return CheckResult("fail", "no time synchronization service running")
@@ -172,16 +185,22 @@ def _chrony_conf_path() -> Path | None:
 
 def _check_chrony_config() -> CheckResult:
     # Only relevant if chrony is the active time sync
-    r = subprocess.run(["systemctl", "is-active", "chronyd"], capture_output=True, text=True)
-    if r.stdout.strip() != "active":
-        r2 = subprocess.run(["systemctl", "is-active", "chrony"], capture_output=True, text=True)
-        if r2.stdout.strip() != "active":
-            return CheckResult("pass", "chrony not in use")
+    try:
+        r = subprocess.run(["systemctl", "is-active", "chronyd"], capture_output=True, text=True)
+        if r.stdout.strip() != "active":
+            r2 = subprocess.run(["systemctl", "is-active", "chrony"], capture_output=True, text=True)
+            if r2.stdout.strip() != "active":
+                return CheckResult("pass", "chrony not in use")
+    except FileNotFoundError:
+        return CheckResult("warn", "systemctl not found — cannot verify chrony status")
 
     p = _chrony_conf_path()
     if p is None:
         return CheckResult("warn", "chrony config not found")
-    text = p.read_text()
+    try:
+        text = p.read_text()
+    except OSError:
+        return CheckResult("warn", f"{p} could not be read")
     if "server" in text or "pool" in text:
         return CheckResult("pass")
     return CheckResult("fail", f"no server/pool configured in {p}")

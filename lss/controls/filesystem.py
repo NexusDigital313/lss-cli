@@ -1,6 +1,7 @@
 """CIS Section 1.1 — Filesystem configuration."""
 
 import subprocess
+from pathlib import Path
 
 from lss.lib.registry import Control, CheckResult, RollbackEntry, register
 
@@ -15,41 +16,70 @@ DISABLED_MODULES = [
 ]
 
 
+def _module_is_loaded(mod: str) -> bool:
+    """True if `mod` is currently loaded, matching the module name EXACTLY.
+
+    A substring test would misclassify a prefix module: checking `hfs` while
+    `hfsplus` is loaded would (wrongly) report `hfs` as present."""
+    try:
+        result = subprocess.run(["lsmod"], capture_output=True, text=True)
+    except FileNotFoundError:
+        return False
+    for line in result.stdout.splitlines()[1:]:  # skip the "Module ..." header
+        parts = line.split()
+        if parts and parts[0] == mod:
+            return True
+    return False
+
+
+def _module_blacklisted(mod: str) -> bool:
+    """True if an UNCOMMENTED modprobe.d directive disables exactly `mod`.
+
+    Reads the files directly and token-matches so that a `blacklist hfsplus`
+    line does not satisfy a check for `hfs`, and a commented-out example line
+    is ignored."""
+    d = Path("/etc/modprobe.d")
+    if not d.is_dir():
+        return False
+    for conf in d.glob("*"):
+        try:
+            text = conf.read_text()
+        except OSError:
+            continue
+        for line in text.splitlines():
+            s = line.strip()
+            if not s or s.startswith("#"):
+                continue
+            toks = s.split()
+            if len(toks) >= 2 and toks[0] == "blacklist" and toks[1] == mod:
+                return True
+            if (len(toks) >= 3 and toks[0] == "install" and toks[1] == mod
+                    and toks[2] in ("/bin/true", "/bin/false")):
+                return True
+    return False
+
+
 def _module_is_disabled(mod: str) -> bool:
-    """Check if a kernel module is disabled via modprobe."""
+    """Check if a kernel module is disabled via modprobe install-nulling or a
+    blacklist directive, using exact matching throughout."""
     try:
         result = subprocess.run(
             ["modprobe", "-n", "--show-depends", mod],
             capture_output=True, text=True,
         )
-        # If modprobe says "install /bin/true" or "install /bin/false", it's disabled
-        if "/bin/true" in result.stdout or "/bin/false" in result.stdout:
-            return True
+        # modprobe emits "install /bin/true" (or /bin/false) for a nulled module.
+        for line in result.stdout.splitlines():
+            toks = line.split()
+            if len(toks) >= 2 and toks[0] == "install" and toks[1] in ("/bin/true", "/bin/false"):
+                return True
     except FileNotFoundError:
         pass
 
-    # Also check if it's currently loaded
-    try:
-        result = subprocess.run(
-            ["lsmod"], capture_output=True, text=True,
-        )
-        if mod in result.stdout:
-            return False
-    except FileNotFoundError:
-        pass
+    # A currently-loaded module is not disabled, whatever the config says.
+    if _module_is_loaded(mod):
+        return False
 
-    # Check blacklist
-    try:
-        result = subprocess.run(
-            ["grep", "-r", f"blacklist {mod}", "/etc/modprobe.d/"],
-            capture_output=True, text=True,
-        )
-        if result.returncode == 0 and result.stdout.strip():
-            return True
-    except FileNotFoundError:
-        pass
-
-    return False
+    return _module_blacklisted(mod)
 
 
 def _disable_module(mod: str) -> list[RollbackEntry]:

@@ -2,7 +2,7 @@
 
 **Audit, harden, and roll back Linux hosts against the CIS Benchmark — with a safety net.**
 
-[![Version](https://img.shields.io/badge/version-1.0.0-blue.svg)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-1.0.1-blue.svg)](CHANGELOG.md)
 [![License](https://img.shields.io/badge/license-Commercial-lightgrey.svg)](LICENSE)
 [![Python](https://img.shields.io/badge/python-3.10%2B-blue.svg)](https://www.python.org/downloads/)
 
@@ -21,13 +21,37 @@ $ sudo lss report --open             # regenerate HTML and open it in your brows
 
 ## Install
 
-Install from the release tarball:
+LSS is a Python package. You install it from a built **wheel** — that wheel
+is not checked into the repo, you produce it (or download it from a release).
+If you cloned the source and there's no `.whl` next to you, that's expected:
+run the build first.
+
+### Option A — build from source, then install (clone / no release bundle)
 
 ```bash
-pip install lss-1.0.0.tar.gz
+./build.sh                        # writes dist/lss-<version>.whl + .tar.gz + SHA256SUMS
+pip install dist/lss-*.whl        # install the wheel you just built
 ```
 
-The release bundle ships `SHA256SUMS` alongside the wheel and sdist. Verify with `sha256sum -c SHA256SUMS` before installing.
+`build.sh` needs **Python 3.10+** and builds inside a throwaway virtualenv, so
+it works on Homebrew/Debian "externally-managed" Pythons and never touches your
+global packages. If your default `python3` is older, point it at a newer one:
+
+```bash
+PYTHON=python3.12 ./build.sh
+```
+
+### Option B — install from a release bundle (you downloaded `dist/`)
+
+A release bundle ships the wheel, the sdist, and `SHA256SUMS`. Verify, then install:
+
+```bash
+cd dist
+shasum -a 256 -c SHA256SUMS       # confirms the files are intact
+pip install lss-*.whl             # or: pip install lss-*.tar.gz
+```
+
+`lss --version` should print the installed version once either path completes.
 
 ---
 

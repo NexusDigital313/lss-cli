@@ -15,15 +15,31 @@ from lss.lib.sysctl import set_sysctl
 def _check_core_dumps() -> CheckResult:
     # Check limits.conf
     limits_ok = False
-    for p in [Path("/etc/security/limits.conf")] + list(Path("/etc/security/limits.d/").glob("*.conf")):
-        if p.exists():
-            for line in p.read_text().splitlines():
-                line = line.strip()
-                if line.startswith("#") or not line:
-                    continue
-                if "core" in line and "0" in line:
-                    limits_ok = True
-                    break
+    limits_files = [Path("/etc/security/limits.conf")]
+    try:
+        limits_files += list(Path("/etc/security/limits.d/").glob("*.conf"))
+    except OSError:
+        pass
+    for p in limits_files:
+        try:
+            content = p.read_text()
+        except OSError:
+            # Missing or unreadable — cannot glean a limit from it, skip it.
+            continue
+        for line in content.splitlines():
+            line = line.strip()
+            if line.startswith("#") or not line:
+                continue
+            # limits.conf format: <domain> <type> <item> <value>. We need a
+            # hard core limit of exactly 0. The old `"core" in line and
+            # "0" in line` substring test accepted e.g. "* soft core 100000"
+            # (contains "core" and "0") as compliant — a nonzero core-size
+            # limit passing the check.
+            parts = line.split()
+            if (len(parts) >= 4 and parts[2] == "core"
+                    and parts[1] in ("hard", "-") and parts[3] == "0"):
+                limits_ok = True
+                break
 
     # Check sysctl
     try:
@@ -123,7 +139,12 @@ def _fix_shm_noexec() -> list[RollbackEntry]:
     text = fstab.read_text() if fstab.exists() else ""
     if "/dev/shm" not in text:
         bkp = journal.backup_file(str(fstab))
-        fstab.write_text(text + "tmpfs /dev/shm tmpfs defaults,noexec,nosuid,nodev 0 0\n")
+        # Guarantee a newline separator. If the existing fstab does not end in
+        # one, a bare append concatenates our line onto the last entry —
+        # corrupting that mount line and potentially making the box fail to
+        # boot. This is the exact class of bug LSS exists to prevent.
+        sep = "" if (not text or text.endswith("\n")) else "\n"
+        fstab.write_text(text + sep + "tmpfs /dev/shm tmpfs defaults,noexec,nosuid,nodev 0 0\n")
         entries.append(RollbackEntry(
             action="added /dev/shm noexec,nosuid,nodev to fstab",
             path=str(fstab),
@@ -196,6 +217,8 @@ def _check_world_writable() -> CheckResult:
         count = len(files)
         sample = files[0] if count == 1 else f"{files[0]} (+{count-1} more)"
         return CheckResult("fail", f"{count} world-writable file(s): {sample}")
+    except FileNotFoundError:
+        return CheckResult("warn", "cannot verify: 'find' not available")
     except subprocess.TimeoutExpired:
         return CheckResult("warn", "scan timed out")
 
@@ -266,6 +289,8 @@ def _check_unowned() -> CheckResult:
         count = len(files)
         sample = files[0] if count == 1 else f"{files[0]} (+{count-1} more)"
         return CheckResult("warn", f"{count} unowned file(s): {sample}")
+    except FileNotFoundError:
+        return CheckResult("warn", "cannot verify: 'find' not available")
     except subprocess.TimeoutExpired:
         return CheckResult("warn", "scan timed out")
 
@@ -295,6 +320,8 @@ def _check_ungrouped() -> CheckResult:
         count = len(files)
         sample = files[0] if count == 1 else f"{files[0]} (+{count-1} more)"
         return CheckResult("warn", f"{count} ungrouped file(s): {sample}")
+    except FileNotFoundError:
+        return CheckResult("warn", "cannot verify: 'find' not available")
     except subprocess.TimeoutExpired:
         return CheckResult("warn", "scan timed out")
 
@@ -325,6 +352,8 @@ def _check_sticky_bit() -> CheckResult:
         count = len(dirs)
         sample = dirs[0] if count == 1 else f"{dirs[0]} (+{count-1} more)"
         return CheckResult("fail", f"{count} world-writable dir(s) without sticky bit: {sample}")
+    except FileNotFoundError:
+        return CheckResult("warn", "cannot verify: 'find' not available")
     except subprocess.TimeoutExpired:
         return CheckResult("warn", "scan timed out")
 

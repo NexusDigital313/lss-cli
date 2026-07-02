@@ -35,10 +35,11 @@ def _save_partial_journal(run_id: str, journal_entries: dict) -> None:
             err(f"Failed to write journal AND emergency dump: {exc2}. "
                 f"Applied changes have NO rollback record.")
 
-# Controls in this list disable services that a customer may be actively using
-# in production (mail server, web server, etc.). When the operator runs
-# `lss harden --confirm` we surface a clear warning before any of these run, so
-# nobody loses their production email server to an unattended hardening pass.
+# Controls in this list disable a service or network path a customer may be
+# actively depending on (mail server, web server, remote connectivity, etc.).
+# When the operator runs `lss harden --confirm` we surface a clear warning
+# before any of these run, so nobody loses a production service — or their
+# remote session — to an unattended hardening pass.
 DESTRUCTIVE_SERVICE_CONTROLS = {
     "2.2.3":  "CUPS (printing)",
     "2.2.6":  "NFS server",
@@ -50,8 +51,11 @@ DESTRUCTIVE_SERVICE_CONTROLS = {
     "2.2.12": "HTTP proxy (squid)",
     "2.2.13": "SNMP",
     "2.2.14": "NIS server",
-    "2.2.15": "Postfix MTA",
     "2.2.16": "rsync service",
+    # Not a service — a connectivity risk. Disabling IPv6 router-advertisement
+    # acceptance drops the box's IPv6 default route on a SLAAC-configured host,
+    # which can cut off an IPv6-only admin session mid-run.
+    "3.3.9":  "IPv6 router advertisements (may drop the IPv6 default route on SLAAC hosts)",
 }
 
 # Import control modules
@@ -108,6 +112,19 @@ def run_harden(args) -> int:
 
     controls = get_controls(ids=args.control if args.control else None)
 
+    # A typo'd or unknown --control ID selects zero matching controls. Without
+    # this guard the run would sail through the loop doing nothing and report
+    # "all controls already passed" with exit 0 — telling the operator a
+    # control they explicitly asked about is compliant when it was never even
+    # evaluated. Fail loudly instead.
+    if args.control:
+        known = {c.id for c in controls}
+        unknown = [cid for cid in args.control if cid not in known]
+        if unknown:
+            err(f"unknown control ID(s): {', '.join(unknown)}. "
+                f"Run `lss list` to see valid control IDs.")
+            return 2
+
     # Pre-flight warning for destructive service-disabling controls. The
     # operator may be actively using these services (mail server, web server,
     # etc.); running harden unattended could break production. We list them up
@@ -118,7 +135,7 @@ def run_harden(args) -> int:
         if ctrl.id in DESTRUCTIVE_SERVICE_CONTROLS and ctrl.fix is not None
     ]
     if selected_destructive and not dry_run:
-        warn("The following controls disable services that may be in production use:")
+        warn("The following controls disable a service or network path that may be in production use:")
         for cid, label in selected_destructive:
             warn(f"    {cid}  {label}")
         warn("Skip individual controls with --control, or run with --dry-run first.")
@@ -136,7 +153,7 @@ def run_harden(args) -> int:
     header("Dry-run plan" if dry_run else "Hardening")
 
     journal_entries: dict[str, list[dict]] = {}
-    applied = skipped = failed = would_fix = declined = 0
+    applied = skipped = failed = would_fix = declined = not_verified = 0
     aborted = False
 
     for ctrl in controls:
@@ -174,8 +191,8 @@ def run_harden(args) -> int:
             print(f"{YELLOW}  ?{RESET} {ctrl.id}   {ctrl.title}")
             print(f"{DIM}    Current: {result.detail or result.status}{RESET}")
             if ctrl.id in DESTRUCTIVE_SERVICE_CONTROLS:
-                warn(f"    NOTE: this fix disables {DESTRUCTIVE_SERVICE_CONTROLS[ctrl.id]} — "
-                     "may break a service in production use.")
+                warn(f"    NOTE: this fix affects {DESTRUCTIVE_SERVICE_CONTROLS[ctrl.id]} — "
+                     "may break a service or connectivity in production use.")
             try:
                 response = input("    Apply fix? [y/N] ").strip().lower()
             except EOFError:
@@ -235,14 +252,29 @@ def run_harden(args) -> int:
                     f"harden fix run_id={run_id} control={ctrl.id} "
                     f"status=applied-but-{verify.status} detail={verify.detail!r}"
                 )
-                applied += 1
+                # The fix ran without raising but the control is STILL not
+                # compliant (e.g. an sshd directive shadowed by a lower-numbered
+                # drop-in, or a setting not honored). This must not read as
+                # success: count it separately and fold it into the exit code so
+                # `lss harden --confirm` in CI can't return 0 while the box is
+                # left non-compliant. The change is still journaled above, so
+                # rollback works.
+                not_verified += 1
 
         except KeyboardInterrupt:
             # Ctrl-C mid-fix in a non-interactive --confirm run. The control
-            # whose fix was interrupted may be half-applied; everything before
-            # it is already journaled (incremental flush above). Stop here and
-            # fall through to the authoritative journal write + summary so the
-            # operator gets a usable `rollback --last` instead of a traceback.
+            # whose fix was interrupted may be half-applied AND its rollback
+            # entries are lost — fix() returns its RollbackEntry list only when
+            # it completes, so an interrupt before `return` leaves any on-disk
+            # change it already made with NO journal entry. Name the control
+            # explicitly so the operator knows to inspect it by hand; everything
+            # before it is journaled (incremental flush above).
+            print()
+            warn(f"Interrupted while applying {ctrl.id} ({ctrl.title}). "
+                 f"This control may have partially-applied changes that are NOT "
+                 f"in the rollback journal — inspect it manually. All controls "
+                 f"completed before it are journaled and can be rolled back.")
+            syslog.warn(f"harden interrupted-mid-fix run_id={run_id} control={ctrl.id}")
             aborted = True
             break
         except Exception as exc:
@@ -271,17 +303,26 @@ def run_harden(args) -> int:
     journal.set_current_run_id(None)
 
     print()
-    info(f"Applied: {applied}   Skipped (already pass): {skipped}   Failed: {failed}{interactive_note}")
+    not_verified_note = f"   Applied-but-still-failing: {not_verified}" if not_verified else ""
+    info(f"Applied: {applied}   Skipped (already pass): {skipped}   Failed: {failed}{not_verified_note}{interactive_note}")
+    if not_verified:
+        warn(f"{not_verified} control(s) had a fix applied but did NOT reach a "
+             f"passing state — the host is not fully compliant. Re-run `lss audit` "
+             f"and review those controls.")
     syslog.info(
         f"harden complete run_id={run_id} applied={applied} "
-        f"skipped={skipped} failed={failed}"
+        f"skipped={skipped} failed={failed} not_verified={not_verified}"
     )
     if journal_entries:
         info(f"Rollback journal: {jpath}")
         info("To undo:  sudo lss rollback --last")
+    elif failed or not_verified:
+        info("No changes applied — the failing controls above could not be fixed automatically.")
     else:
         info("Nothing to harden — all controls already passed.")
 
     if aborted:
         return 130  # 128 + SIGINT
-    return failed
+    # A fix that ran but left the control non-compliant counts toward the
+    # failure exit code — otherwise automation reads exit 0 as full success.
+    return failed + not_verified

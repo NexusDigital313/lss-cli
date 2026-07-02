@@ -17,7 +17,11 @@ def _get_pam_minlen() -> int | None:
     # Check pwquality.conf first
     conf = Path("/etc/security/pwquality.conf")
     if conf.exists():
-        for line in conf.read_text().splitlines():
+        try:
+            conf_lines = conf.read_text().splitlines()
+        except OSError:
+            conf_lines = []
+        for line in conf_lines:
             line = line.strip()
             if line.startswith("minlen"):
                 m = re.search(r"minlen\s*=\s*(\d+)", line)
@@ -31,7 +35,11 @@ def _get_pam_minlen() -> int | None:
     ]:
         p = Path(pam_path)
         if p.exists():
-            for line in p.read_text().splitlines():
+            try:
+                pam_lines = p.read_text().splitlines()
+            except OSError:
+                pam_lines = []
+            for line in pam_lines:
                 if "pam_pwquality" in line or "pam_cracklib" in line:
                     m = re.search(r"minlen=(\d+)", line)
                     if m:
@@ -88,7 +96,11 @@ def _get_login_def(key: str) -> str | None:
     p = Path("/etc/login.defs")
     if not p.exists():
         return None
-    for line in p.read_text().splitlines():
+    try:
+        def_lines = p.read_text().splitlines()
+    except OSError:
+        return None
+    for line in def_lines:
         line = line.strip()
         if line.startswith("#") or not line:
             continue
@@ -242,7 +254,11 @@ def _check_su_restricted() -> CheckResult:
     pam_su = Path("/etc/pam.d/su")
     if not pam_su.exists():
         return CheckResult("warn", "/etc/pam.d/su not found")
-    for line in pam_su.read_text().splitlines():
+    try:
+        su_lines = pam_su.read_text().splitlines()
+    except OSError:
+        return CheckResult("warn", "/etc/pam.d/su not readable — cannot verify su restriction")
+    for line in su_lines:
         stripped = line.strip()
         if stripped.startswith("#"):
             continue
@@ -299,7 +315,11 @@ def _check_uid_zero() -> CheckResult:
     passwd = Path("/etc/passwd")
     if not passwd.exists():
         return CheckResult("warn", "/etc/passwd not found")
-    for line in passwd.read_text().splitlines():
+    try:
+        passwd_lines = passwd.read_text().splitlines()
+    except OSError:
+        return CheckResult("warn", "/etc/passwd not readable — cannot verify UID 0 accounts")
+    for line in passwd_lines:
         parts = line.split(":")
         if len(parts) >= 3 and parts[2] == "0" and parts[0] != "root":
             uid0_users.append(parts[0])
@@ -324,9 +344,15 @@ def _check_root_gid() -> CheckResult:
     passwd = Path("/etc/passwd")
     if not passwd.exists():
         return CheckResult("warn", "/etc/passwd not found")
-    for line in passwd.read_text().splitlines():
+    try:
+        passwd_lines = passwd.read_text().splitlines()
+    except OSError:
+        return CheckResult("warn", "/etc/passwd not readable — cannot verify root GID")
+    for line in passwd_lines:
         parts = line.split(":")
         if parts[0] == "root":
+            if len(parts) < 4:
+                return CheckResult("fail", "root entry in /etc/passwd is malformed")
             if parts[3] == "0":
                 return CheckResult("pass")
             return CheckResult("fail", f"root GID={parts[3]}, expected: 0")
@@ -387,10 +413,20 @@ def _check_inactive_lock() -> CheckResult:
 
 
 def _fix_inactive_lock() -> list[RollbackEntry]:
+    # Capture the CURRENT default so rollback restores exactly what was there.
+    # Hardcoding "-1" on undo would DISABLE inactive-lock on rollback even if
+    # the box previously had a stricter value (e.g. 15), silently weakening it.
+    prev = None
+    r = subprocess.run(["useradd", "-D"], capture_output=True, text=True)
+    for line in r.stdout.splitlines():
+        if line.startswith("INACTIVE="):
+            prev = line.split("=", 1)[1].strip()
+            break
+    undo_val = prev if prev not in (None, "") else "-1"
     subprocess.run(["useradd", "-D", "-f", "30"], capture_output=True, check=True)
     return [RollbackEntry(
-        action="set default INACTIVE=30",
-        undo=[["useradd", "-D", "-f", "-1"]],
+        action=f"set default INACTIVE=30 (was {undo_val})",
+        undo=[["useradd", "-D", "-f", undo_val]],
     )]
 
 

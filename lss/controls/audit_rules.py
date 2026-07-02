@@ -9,7 +9,17 @@ from pathlib import Path
 from lss.lib import journal
 from lss.lib.registry import Control, CheckResult, RollbackEntry, register
 
+# Legacy shared file — kept for the immutable-flag control's path and for
+# rollback of pre-1.0.2 journals. New rule writes go to a per-control file (see
+# _rules_path_for) so rolling back one audit control can't restore a stale
+# whole-file snapshot and silently delete another control's rules.
 LSS_AUDIT_RULES = "/etc/audit/rules.d/80-lss.rules"
+
+
+def _rules_path_for(control_id: str) -> str:
+    """Per-control audit rules file, e.g. 4.1.3 -> 80-lss-4-1-3.rules."""
+    safe = control_id.replace(".", "-")
+    return f"/etc/audit/rules.d/80-lss-{safe}.rules"
 
 
 def _rule_is_active(pattern: str) -> bool:
@@ -28,10 +38,21 @@ def _rule_is_active(pattern: str) -> bool:
 def _rule_is_persisted(pattern: str) -> bool:
     """Check if rule exists in /etc/audit/rules.d/."""
     rules_dir = Path("/etc/audit/rules.d")
-    if not rules_dir.exists():
+    try:
+        if not rules_dir.exists():
+            return False
+        rule_files = list(rules_dir.glob("*.rules"))
+    except OSError:
         return False
-    for f in rules_dir.glob("*.rules"):
-        for line in f.read_text().splitlines():
+    for f in rule_files:
+        try:
+            contents = f.read_text()
+        except OSError:
+            # File vanished mid-scan or is unreadable — skip it rather than
+            # crash the whole audit. A missing/unreadable file can't prove the
+            # rule is persisted, so treat it as not found here.
+            continue
+        for line in contents.splitlines():
             if pattern in line:
                 return True
     return False
@@ -53,15 +74,16 @@ def _delete_argv_for(rule_argv: list[str]) -> list[str] | None:
     return None
 
 
-def _add_audit_rule(rule: str) -> RollbackEntry:
-    """Add an audit rule to runtime and persist it.
+def _add_audit_rule(rule: str, control_id: str) -> RollbackEntry:
+    """Add an audit rule to runtime and persist it to this control's own file.
 
     Splits the rule with shlex (no shell), runs `auditctl <args>` with
     shell=False, and records an argv-form delete for rollback. The persisted
-    rules file is backed up before modification so rollback restores it.
+    rules file is per-control and backed up before modification so rollback
+    restores it without touching any other control's rules.
     """
     rule_argv = shlex.split(rule)
-    p = Path(LSS_AUDIT_RULES)
+    p = Path(_rules_path_for(control_id))
     p.parent.mkdir(parents=True, exist_ok=True)
     bkp = journal.backup_file(str(p))
 
@@ -230,7 +252,7 @@ _AUDIT_CONTROLS = [
 
 
 for _id, _title, _pattern, _rules in _AUDIT_CONTROLS:
-    pattern, rules = _pattern, _rules
+    pattern, rules, cid = _pattern, _rules, _id
 
     def _make_check(pat):
         def check():
@@ -241,9 +263,9 @@ for _id, _title, _pattern, _rules in _AUDIT_CONTROLS:
             return CheckResult("fail", f"no audit rules for {pat}")
         return check
 
-    def _make_fix(rs):
+    def _make_fix(rs, cid):
         def fix():
-            return [_add_audit_rule(r) for r in rs]
+            return [_add_audit_rule(r, cid) for r in rs]
         return fix
 
     register(Control(
@@ -251,7 +273,7 @@ for _id, _title, _pattern, _rules in _AUDIT_CONTROLS:
         title=_title,
         section="logging",
         check=_make_check(pattern),
-        fix=_make_fix(rules),
+        fix=_make_fix(rules, cid),
     ))
 
 

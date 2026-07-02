@@ -16,9 +16,12 @@ from lss.lib.sshd import get_sshd_setting as _get_sshd_setting, set_sshd_setting
 def _check_sshd_config_perms() -> CheckResult:
     import stat
     p = Path("/etc/ssh/sshd_config")
-    if not p.exists():
+    try:
+        st = p.stat()
+    except FileNotFoundError:
         return CheckResult("warn", "sshd_config not found")
-    st = p.stat()
+    except OSError as e:
+        return CheckResult("warn", f"could not stat sshd_config: {e}")
     mode = stat.S_IMODE(st.st_mode)
     if mode & ~0o600:
         return CheckResult("fail", f"mode={oct(mode)}, expected: 0600 or stricter")
@@ -180,10 +183,13 @@ def _check_usb_storage() -> CheckResult:
             return CheckResult("pass")
     except FileNotFoundError:
         pass
-    r2 = subprocess.run(["grep", "-r", "blacklist usb-storage", "/etc/modprobe.d/"],
-                        capture_output=True, text=True)
-    if r2.returncode == 0 and r2.stdout.strip():
-        return CheckResult("pass")
+    try:
+        r2 = subprocess.run(["grep", "-r", "blacklist usb-storage", "/etc/modprobe.d/"],
+                            capture_output=True, text=True)
+        if r2.returncode == 0 and r2.stdout.strip():
+            return CheckResult("pass")
+    except FileNotFoundError:
+        pass
     return CheckResult(
         "manual",
         "usb-storage not disabled — blacklist by hand "
@@ -218,16 +224,25 @@ register(Control(
 # ---- CIS 1.3.1: Ensure AIDE is installed ----
 
 def _check_aide_installed() -> CheckResult:
-    r = subprocess.run(["which", "aide"], capture_output=True, text=True)
-    if r.returncode == 0:
-        return CheckResult("pass")
-    r2 = subprocess.run(["dpkg-query", "-W", "aide"], capture_output=True, text=True)
-    if r2.returncode == 0 and "install ok installed" in r2.stdout:
-        return CheckResult("pass")
+    try:
+        r = subprocess.run(["which", "aide"], capture_output=True, text=True)
+        if r.returncode == 0:
+            return CheckResult("pass")
+    except FileNotFoundError:
+        pass
+    try:
+        r2 = subprocess.run(["dpkg-query", "-W", "aide"], capture_output=True, text=True)
+        if r2.returncode == 0 and "install ok installed" in r2.stdout:
+            return CheckResult("pass")
+    except FileNotFoundError:
+        pass
     # RHEL
-    r3 = subprocess.run(["rpm", "-q", "aide"], capture_output=True, text=True)
-    if r3.returncode == 0:
-        return CheckResult("pass")
+    try:
+        r3 = subprocess.run(["rpm", "-q", "aide"], capture_output=True, text=True)
+        if r3.returncode == 0:
+            return CheckResult("pass")
+    except FileNotFoundError:
+        pass
     return CheckResult("warn", "AIDE not installed — no file integrity monitoring")
 
 
@@ -244,14 +259,20 @@ register(Control(
 
 def _check_aide_cron() -> CheckResult:
     # Check for AIDE in crontab or systemd timers
-    r = subprocess.run(["grep", "-r", "aide", "/etc/cron.daily/", "/etc/cron.weekly/",
-                        "/etc/crontab"], capture_output=True, text=True)
-    if r.returncode == 0 and r.stdout.strip():
-        return CheckResult("pass")
-    r2 = subprocess.run(["systemctl", "is-enabled", "aidecheck.timer"],
-                        capture_output=True, text=True)
-    if r2.stdout.strip() == "enabled":
-        return CheckResult("pass")
+    try:
+        r = subprocess.run(["grep", "-r", "aide", "/etc/cron.daily/", "/etc/cron.weekly/",
+                            "/etc/crontab"], capture_output=True, text=True)
+        if r.returncode == 0 and r.stdout.strip():
+            return CheckResult("pass")
+    except FileNotFoundError:
+        pass
+    try:
+        r2 = subprocess.run(["systemctl", "is-enabled", "aidecheck.timer"],
+                            capture_output=True, text=True)
+        if r2.stdout.strip() == "enabled":
+            return CheckResult("pass")
+    except FileNotFoundError:
+        pass
     return CheckResult("warn", "no periodic AIDE check scheduled")
 
 
@@ -296,12 +317,18 @@ register(Control(
 # ---- CIS 1.6.1: Ensure AppArmor is installed ----
 
 def _check_apparmor_installed() -> CheckResult:
-    r = subprocess.run(["which", "apparmor_status"], capture_output=True, text=True)
-    if r.returncode == 0:
-        return CheckResult("pass")
-    r2 = subprocess.run(["dpkg-query", "-W", "apparmor"], capture_output=True, text=True)
-    if r2.returncode == 0 and "install ok installed" in r2.stdout:
-        return CheckResult("pass")
+    try:
+        r = subprocess.run(["which", "apparmor_status"], capture_output=True, text=True)
+        if r.returncode == 0:
+            return CheckResult("pass")
+    except FileNotFoundError:
+        pass
+    try:
+        r2 = subprocess.run(["dpkg-query", "-W", "apparmor"], capture_output=True, text=True)
+        if r2.returncode == 0 and "install ok installed" in r2.stdout:
+            return CheckResult("pass")
+    except FileNotFoundError:
+        pass
     return CheckResult("warn", "AppArmor not installed")
 
 
@@ -323,13 +350,19 @@ register(Control(
 # ---- CIS 1.6.2: Ensure AppArmor is enabled in bootloader ----
 
 def _check_apparmor_enabled() -> CheckResult:
-    r = subprocess.run(["aa-status", "--enabled"], capture_output=True, text=True)
-    if r.returncode == 0:
-        return CheckResult("pass")
-    r2 = subprocess.run(["cat", "/sys/module/apparmor/parameters/enabled"],
-                        capture_output=True, text=True)
-    if r2.stdout.strip() == "Y":
-        return CheckResult("pass")
+    try:
+        r = subprocess.run(["aa-status", "--enabled"], capture_output=True, text=True)
+        if r.returncode == 0:
+            return CheckResult("pass")
+    except FileNotFoundError:
+        pass
+    try:
+        r2 = subprocess.run(["cat", "/sys/module/apparmor/parameters/enabled"],
+                            capture_output=True, text=True)
+        if r2.stdout.strip() == "Y":
+            return CheckResult("pass")
+    except FileNotFoundError:
+        pass
     return CheckResult(
         "warn",
         "AppArmor not enabled in the running kernel. Add `apparmor=1 security=apparmor` to "
@@ -385,8 +418,11 @@ register(Control(
 def _check_repos() -> CheckResult:
     sources = Path("/etc/apt/sources.list")
     sources_d = Path("/etc/apt/sources.list.d")
-    if sources.exists() and sources.read_text().strip():
-        return CheckResult("pass")
+    try:
+        if sources.exists() and sources.read_text().strip():
+            return CheckResult("pass")
+    except OSError:
+        pass
     if sources_d.exists() and list(sources_d.glob("*.list")) + list(sources_d.glob("*.sources")):
         return CheckResult("pass")
     # RHEL
@@ -413,17 +449,23 @@ def _check_gpg_keys() -> CheckResult:
     if gpg_d.exists() and (list(gpg_d.glob("*.gpg")) + list(gpg_d.glob("*.asc"))):
         return CheckResult("pass")
     # Signed-by in sources
-    r = subprocess.run(["grep", "-r", "signed-by", "/etc/apt/sources.list.d/"],
-                       capture_output=True, text=True)
-    if r.returncode == 0 and r.stdout.strip():
-        return CheckResult("pass")
+    try:
+        r = subprocess.run(["grep", "-r", "signed-by", "/etc/apt/sources.list.d/"],
+                           capture_output=True, text=True)
+        if r.returncode == 0 and r.stdout.strip():
+            return CheckResult("pass")
+    except FileNotFoundError:
+        pass
     # Legacy trusted.gpg
     if Path("/etc/apt/trusted.gpg").exists():
         return CheckResult("pass")
     # RHEL
-    r2 = subprocess.run(["rpm", "-qa", "gpg-pubkey*"], capture_output=True, text=True)
-    if r2.returncode == 0 and r2.stdout.strip():
-        return CheckResult("pass")
+    try:
+        r2 = subprocess.run(["rpm", "-qa", "gpg-pubkey*"], capture_output=True, text=True)
+        if r2.returncode == 0 and r2.stdout.strip():
+            return CheckResult("pass")
+    except FileNotFoundError:
+        pass
     return CheckResult("warn", "no GPG keys found for package verification")
 
 
@@ -440,7 +482,10 @@ register(Control(
 
 def _check_updates() -> CheckResult:
     # apt
-    r = subprocess.run(["apt", "list", "--upgradable"], capture_output=True, text=True)
+    try:
+        r = subprocess.run(["apt", "list", "--upgradable"], capture_output=True, text=True)
+    except FileNotFoundError:
+        return CheckResult("warn", "could not check for updates — ensure apt or dnf is available and sources configured")
     if r.returncode == 0:
         upgradable = [l for l in r.stdout.splitlines() if "/" in l and "Listing..." not in l]
         if len(upgradable) == 0:
@@ -473,11 +518,18 @@ _LEGACY_CLIENTS = [
 
 
 def _pkg_installed(name: str) -> bool:
-    r = subprocess.run(["dpkg-query", "-W", "-f=${Status}", name], capture_output=True, text=True)
-    if r.returncode == 0 and "install ok installed" in r.stdout:
-        return True
-    r2 = subprocess.run(["rpm", "-q", name], capture_output=True, text=True)
-    return r2.returncode == 0
+    try:
+        r = subprocess.run(["dpkg-query", "-W", "-f=${Status}", name], capture_output=True, text=True)
+        if r.returncode == 0 and "install ok installed" in r.stdout:
+            return True
+    except FileNotFoundError:
+        pass
+    try:
+        r2 = subprocess.run(["rpm", "-q", name], capture_output=True, text=True)
+        return r2.returncode == 0
+    except FileNotFoundError:
+        # No package manager present → the package cannot be installed.
+        return False
 
 
 from lss.lib import pkg as _pkg_lib

@@ -14,9 +14,12 @@ from lss.lib.registry import Control, CheckResult, RollbackEntry, register
 # ---- CIS 5.1.1: Ensure cron daemon is enabled and running ----
 
 def _check_cron_enabled() -> CheckResult:
-    r = subprocess.run(["systemctl", "is-enabled", "cron"], capture_output=True, text=True)
+    try:
+        r = subprocess.run(["systemctl", "is-enabled", "cron"], capture_output=True, text=True)
+        r2 = subprocess.run(["systemctl", "is-active", "cron"], capture_output=True, text=True)
+    except FileNotFoundError:
+        return CheckResult("warn", "systemctl not found — cannot verify cron daemon state")
     enabled = r.stdout.strip() == "enabled"
-    r2 = subprocess.run(["systemctl", "is-active", "cron"], capture_output=True, text=True)
     active = r2.stdout.strip() == "active"
     if enabled and active:
         return CheckResult("pass")
@@ -80,7 +83,13 @@ for _id, _title, _path, _mode in _CRON_PATHS:
 
     def _make_fix(p, m):
         def fix():
-            st = Path(p).stat()
+            pp = Path(p)
+            # harden fixes any non-pass status — including the "warn" this
+            # control returns when the path is absent. Guard so a missing cron
+            # directory doesn't raise FileNotFoundError from stat() and abort.
+            if not pp.exists():
+                return []
+            st = pp.stat()
             old_mode_str = f"{stat.S_IMODE(st.st_mode):04o}"
             old_uid = st.st_uid
             old_gid = st.st_gid
@@ -143,7 +152,17 @@ def _fix_cron_allow() -> list[RollbackEntry]:
             path=str(allow),
         ))
     else:
-        os.chmod(str(allow), 0o640)
+        # cron.allow already exists — tighten its mode, but RECORD the change
+        # so rollback can restore the original permissions. Without an entry the
+        # chmod was silently irreversible.
+        old_mode = stat.S_IMODE(allow.stat().st_mode)
+        if old_mode != 0o640:
+            os.chmod(str(allow), 0o640)
+            entries.append(RollbackEntry(
+                action=f"set /etc/cron.allow mode to 0640 (was {old_mode:04o})",
+                undo=[["chmod", f"{old_mode:04o}", str(allow)]],
+                path=str(allow),
+            ))
 
     return entries
 
@@ -163,7 +182,10 @@ def _check_at_allow() -> CheckResult:
     deny = Path("/etc/at.deny")
     allow = Path("/etc/at.allow")
     # If at is not installed, not applicable
-    r = subprocess.run(["which", "at"], capture_output=True, text=True)
+    try:
+        r = subprocess.run(["which", "at"], capture_output=True, text=True)
+    except FileNotFoundError:
+        return CheckResult("warn", "which not found — cannot verify whether at is installed")
     if r.returncode != 0:
         return CheckResult("pass", "at not installed")
     if deny.exists():

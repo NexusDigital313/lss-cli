@@ -5,6 +5,26 @@ All notable changes to LSS will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project follows [Semantic Versioning](https://semver.org/).
 
+## [1.0.1] — 2026-07-02
+
+Safety and UX overhaul across all control modules (+1,351 / −434 lines, 1047 tests passing).
+
+### Safety
+
+- **IPv6 lockout disarmed.** Firewall hardening no longer risks locking the operator out over IPv6.
+- **Durable rollback journal.** Journal writes are flushed and fsync'd so an interrupted harden run stays reversible.
+- **sshd reload on rollback.** Reversing an sshd control now reloads the daemon so the undo actually takes effect.
+
+### UX
+
+- **Streaming audit output** — results render as controls are evaluated instead of after the full pass.
+- Redesigned, more legible audit/harden output across every control module.
+
+### Packaging
+
+- `build.sh` — one command produces the wheel, sdist, and `SHA256SUMS` in `dist/` (builds in a throwaway venv; no wheel is checked into the repo).
+- Install docs rewritten to cover build-from-source vs. release-bundle paths.
+
 ## [1.0.0] — 2026-04-30
 
 Initial public release.

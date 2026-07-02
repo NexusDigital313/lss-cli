@@ -3,18 +3,66 @@
 from __future__ import annotations
 
 import subprocess
+from pathlib import Path
 
+from lss.lib import journal
 from lss.lib.registry import Control, CheckResult, RollbackEntry, register
+
+
+def _persist_fstab_options(mountpoint: str, required_opts: list[str]) -> RollbackEntry | None:
+    """Add `required_opts` to the existing /etc/fstab entry for `mountpoint`.
+
+    A `mount -o remount` alone is lost on reboot, so hardening would silently
+    revert while being reported as fixed. This persists the options to fstab
+    (backed up so rollback restores the original line). Returns None if there's
+    no fstab entry for the mountpoint (e.g. a systemd-managed tmpfs) or the
+    options are already present — we never invent a new device line, since a
+    wrong fstab entry can make the box fail to boot."""
+    fstab = Path("/etc/fstab")
+    if not fstab.exists():
+        return None
+    lines = fstab.read_text().splitlines(keepends=True)
+    for i, raw in enumerate(lines):
+        s = raw.strip()
+        if not s or s.startswith("#"):
+            continue
+        fields = s.split()
+        if len(fields) < 4 or fields[1] != mountpoint:
+            continue
+        opts = fields[3].split(",")
+        missing = [o for o in required_opts if o not in opts]
+        if not missing:
+            return None  # already persisted
+        fields[3] = ",".join(opts + missing)
+        eol = "\n" if raw.endswith("\n") else ""
+        # Back up BEFORE writing so rollback restores the exact original line.
+        bkp = journal.backup_file(str(fstab))
+        lines[i] = " ".join(fields) + eol
+        fstab.write_text("".join(lines))
+        return RollbackEntry(
+            action=f"added {','.join(missing)} to {mountpoint} in /etc/fstab",
+            path=str(fstab),
+            backup=bkp,
+        )
+    return None
 
 
 def _is_separate_mount(path: str) -> bool:
     """Check if a path is a separate mount point."""
-    r = subprocess.run(["findmnt", "-n", path], capture_output=True, text=True)
+    try:
+        r = subprocess.run(["findmnt", "-n", path], capture_output=True, text=True)
+    except FileNotFoundError:
+        # findmnt absent — can't confirm a separate mount. Treat as "not
+        # separate" so callers degrade to a warn (never a false pass).
+        return False
     return r.returncode == 0 and path in r.stdout
 
 
 def _get_mount_options(path: str) -> set[str]:
-    r = subprocess.run(["findmnt", "-n", "-o", "OPTIONS", path], capture_output=True, text=True)
+    try:
+        r = subprocess.run(["findmnt", "-n", "-o", "OPTIONS", path], capture_output=True, text=True)
+    except FileNotFoundError:
+        return set()
     if r.returncode == 0 and r.stdout.strip():
         return set(r.stdout.strip().split(","))
     return set()
@@ -89,10 +137,18 @@ for _id, _title, _path, _opts in _MOUNT_OPTION_CHECKS:
                 ["mount", "-o", f"remount,{opt_str}", p],
                 capture_output=True, check=True,
             )
-            return [RollbackEntry(
+            entries = [RollbackEntry(
                 action=f"remounted {p} with {','.join(required_opts)} (preserved existing options)",
                 undo=[["mount", "-o", f"remount,{previous_opts}", p]],
             )]
+            # Persist to fstab so the option survives a reboot. If there's no
+            # fstab entry (systemd-managed mount), the runtime remount still
+            # applied; the control will simply show failing again after reboot,
+            # which is honest — better than claiming a persistent fix.
+            persisted = _persist_fstab_options(p, required_opts)
+            if persisted is not None:
+                entries.append(persisted)
+            return entries
         return fix
 
     register(Control(

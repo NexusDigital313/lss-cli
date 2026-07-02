@@ -14,7 +14,10 @@ def _check_file_perms(path: str, expected_mode: int, expected_uid: int = 0, expe
     p = Path(path)
     if not p.exists():
         return CheckResult("warn", f"{path} not found")
-    st = p.stat()
+    try:
+        st = p.stat()
+    except OSError as e:
+        return CheckResult("warn", f"cannot stat {path}: {e}")
     issues = []
     actual_mode = stat.S_IMODE(st.st_mode)
     # Check if actual mode is stricter than or equal to expected
@@ -127,6 +130,10 @@ def _check_suid_sgid() -> CheckResult:
         return CheckResult("warn", f"{count} SUID/SGID binaries — review recommended")
     except subprocess.TimeoutExpired:
         return CheckResult("warn", "scan timed out")
+    except FileNotFoundError:
+        return CheckResult("warn", "find not available — cannot scan for SUID/SGID files")
+    except OSError as e:
+        return CheckResult("warn", f"SUID/SGID scan failed: {e}")
 
 
 register(Control(

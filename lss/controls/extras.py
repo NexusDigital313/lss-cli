@@ -2,11 +2,74 @@
 
 from __future__ import annotations
 
+import re
 import subprocess
 from pathlib import Path
 
 from lss.lib import distro, journal
 from lss.lib.registry import Control, CheckResult, RollbackEntry, register
+
+
+def _parse_ini_sections(text: str) -> dict[str, dict[str, str]]:
+    """Very small openssl.cnf/INI reader: {section_name: {key: value}}. The
+    top (nameless) section — where `openssl_conf` must live — is keyed by ''."""
+    sections: dict[str, dict[str, str]] = {"": {}}
+    cur = ""
+    for line in text.splitlines():
+        s = line.strip()
+        if not s or s.startswith("#") or s.startswith(";"):
+            continue
+        m = re.match(r"\[\s*([^\]]+?)\s*\]", s)
+        if m:
+            cur = m.group(1)
+            sections.setdefault(cur, {})
+            continue
+        if "=" in s:
+            k, v = s.split("=", 1)
+            sections[cur][k.strip()] = v.strip()
+    return sections
+
+
+def _openssl_min_protocol_effective(text: str) -> str | None:
+    """Return the MinProtocol OpenSSL will actually apply, tracing the wiring
+    openssl_conf -> ssl_conf -> system_default -> MinProtocol. None if the
+    chain isn't wired (so a bare, unreferenced [system_default_sect] does NOT
+    count as compliant — that was the false-pass)."""
+    sec = _parse_ini_sections(text)
+    init = sec.get("", {}).get("openssl_conf")
+    if not init:
+        return None
+    ssl = sec.get(init, {}).get("ssl_conf")
+    if not ssl:
+        return None
+    sysdef = sec.get(ssl, {}).get("system_default")
+    if not sysdef:
+        return None
+    return sec.get(sysdef, {}).get("MinProtocol")
+
+
+def _set_key_in_section(text: str, section: str, key: str, value: str) -> str:
+    """Set `key = value` inside `[section]`, creating the section if absent."""
+    lines = text.splitlines(keepends=True)
+    header_re = re.compile(rf"^\s*\[\s*{re.escape(section)}\s*\]")
+    any_header = re.compile(r"^\s*\[[^\]]+\]")
+    key_re = re.compile(rf"^\s*{re.escape(key)}\s*=")
+    in_sec = False
+    for i, line in enumerate(lines):
+        if header_re.match(line):
+            in_sec = True
+            continue
+        if in_sec and any_header.match(line):
+            lines.insert(i, f"{key} = {value}\n")
+            return "".join(lines)
+        if in_sec and key_re.match(line):
+            lines[i] = f"{key} = {value}\n"
+            return "".join(lines)
+    if in_sec:
+        lines.append(f"{key} = {value}\n")
+        return "".join(lines)
+    tail = "" if not text or text.endswith("\n") else "\n"
+    return text + tail + f"\n[{section}]\n{key} = {value}\n"
 
 
 # ---- LSS-001: Ensure system-wide crypto policy is not legacy ----
@@ -17,22 +80,32 @@ def _check_crypto_policy() -> CheckResult:
     # RHEL family: /etc/crypto-policies/config is the source of truth
     p = Path("/etc/crypto-policies/config")
     if p.exists():
-        val = p.read_text().strip()
+        try:
+            val = p.read_text().strip()
+        except OSError:
+            return CheckResult("warn", "cannot read /etc/crypto-policies/config")
         if val == "LEGACY":
             return CheckResult("fail", "crypto policy is LEGACY")
         return CheckResult("pass", f"crypto policy: {val}")
 
-    # Debian family: inspect openssl MinProtocol if set
+    # Debian family: MinProtocol only takes effect if it's wired through
+    # openssl_conf -> ssl_conf -> system_default. A bare [system_default_sect]
+    # that nothing references does NOT harden TLS, so trace the chain rather
+    # than substring-matching (which used to false-pass on an inert block).
     ssl_conf = Path("/etc/ssl/openssl.cnf")
     if ssl_conf.exists():
-        text = ssl_conf.read_text()
-        if "MinProtocol = TLSv1.2" in text or "MinProtocol = TLSv1.3" in text:
-            return CheckResult("pass", "openssl MinProtocol >= TLSv1.2")
-        if "MinProtocol" in text:
-            return CheckResult("warn", "openssl MinProtocol is set but not >= TLSv1.2")
+        try:
+            eff = _openssl_min_protocol_effective(ssl_conf.read_text())
+        except OSError:
+            return CheckResult("warn", "cannot read /etc/ssl/openssl.cnf")
+        if eff in ("TLSv1.2", "TLSv1.3"):
+            return CheckResult("pass", f"openssl MinProtocol={eff} (wired)")
+        if eff is not None:
+            return CheckResult("fail", f"openssl MinProtocol={eff}, recommended: >= TLSv1.2")
+        return CheckResult("fail", "openssl MinProtocol not enforced (no wired system_default)")
 
-    # Neither config tells us anything definitive — skip rather than
-    # silently passing on a system we can't inspect.
+    # No crypto policy file at all — skip rather than pass on a system we
+    # can't inspect.
     return CheckResult("skip", f"no crypto policy file on {distro.detect().family} family")
 
 
@@ -60,14 +133,35 @@ def _fix_crypto_policy() -> list[RollbackEntry]:
     if ssl_conf.exists():
         bkp = journal.backup_file(str(ssl_conf))
         text = ssl_conf.read_text()
-        if "MinProtocol" in text:
-            import re
-            text = re.sub(r"MinProtocol\s*=\s*\S+", "MinProtocol = TLSv1.2", text)
+        sec = _parse_ini_sections(text)
+        init = sec.get("", {}).get("openssl_conf")
+
+        if init and sec.get(init, {}).get("ssl_conf"):
+            # An openssl_conf -> ssl_conf chain already exists; extend it.
+            ssl = sec[init]["ssl_conf"]
+            sysdef = sec.get(ssl, {}).get("system_default")
+            if sysdef:
+                # Set MinProtocol in the EXISTING terminal section.
+                text = _set_key_in_section(text, sysdef, "MinProtocol", "TLSv1.2")
+            else:
+                # ssl_conf section exists but has no system_default — point it
+                # at an LSS section and create that section.
+                text = _set_key_in_section(text, ssl, "system_default", "lss_system_default")
+                text = _set_key_in_section(text, "lss_system_default", "MinProtocol", "TLSv1.2")
         else:
-            text = text.rstrip() + "\n\n[system_default_sect]\nMinProtocol = TLSv1.2\n"
+            # No usable chain. Build one, wiring openssl_conf if it's absent
+            # (it must live in the top section, so prepend it).
+            if init:
+                text = _set_key_in_section(text, init, "ssl_conf", "lss_ssl_sect")
+            else:
+                text = "openssl_conf = lss_openssl_init\n" + text
+                text = _set_key_in_section(text, "lss_openssl_init", "ssl_conf", "lss_ssl_sect")
+            text = _set_key_in_section(text, "lss_ssl_sect", "system_default", "lss_system_default")
+            text = _set_key_in_section(text, "lss_system_default", "MinProtocol", "TLSv1.2")
+
         ssl_conf.write_text(text)
         return [RollbackEntry(
-            action="set openssl MinProtocol = TLSv1.2",
+            action="wired openssl MinProtocol = TLSv1.2",
             path=str(ssl_conf),
             backup=bkp,
         )]
@@ -87,10 +181,16 @@ register(Control(
 # ---- CIS 3.2.1: Ensure IP forwarding is disabled (IPv6 specific) ----
 
 def _check_ipv6_forwarding() -> CheckResult:
-    r = subprocess.run(["sysctl", "-n", "net.ipv6.conf.all.disable_ipv6"], capture_output=True, text=True)
+    try:
+        r = subprocess.run(["sysctl", "-n", "net.ipv6.conf.all.disable_ipv6"], capture_output=True, text=True)
+    except FileNotFoundError:
+        return CheckResult("warn", "sysctl not available — cannot verify IPv6 forwarding")
     if r.stdout.strip() == "1":
         return CheckResult("pass", "IPv6 is disabled")
-    r2 = subprocess.run(["sysctl", "-n", "net.ipv6.conf.all.forwarding"], capture_output=True, text=True)
+    try:
+        r2 = subprocess.run(["sysctl", "-n", "net.ipv6.conf.all.forwarding"], capture_output=True, text=True)
+    except FileNotFoundError:
+        return CheckResult("warn", "sysctl not available — cannot verify IPv6 forwarding")
     if r2.returncode == 0 and r2.stdout.strip() == "0":
         return CheckResult("pass")
     return CheckResult("fail", f"net.ipv6.conf.all.forwarding={r2.stdout.strip()}")
@@ -120,7 +220,11 @@ def _check_securetty() -> CheckResult:
     if not p.exists():
         # If securetty doesn't exist, root can log in from anywhere PAM allows
         return CheckResult("pass", "no /etc/securetty — PAM controls access")
-    lines = [l.strip() for l in p.read_text().splitlines() if l.strip() and not l.startswith("#")]
+    try:
+        raw = p.read_text()
+    except OSError:
+        return CheckResult("warn", "cannot read /etc/securetty")
+    lines = [l.strip() for l in raw.splitlines() if l.strip() and not l.startswith("#")]
     if len(lines) <= 6:
         return CheckResult("pass", f"{len(lines)} console(s) allowed")
     return CheckResult("warn", f"{len(lines)} consoles in securetty — review for excess")
@@ -221,7 +325,10 @@ register(Control(
 # ---- CIS 2.4: Ensure nonessential services listening are removed ----
 
 def _check_listening_services() -> CheckResult:
-    r = subprocess.run(["ss", "-H", "-tlnp"], capture_output=True, text=True)
+    try:
+        r = subprocess.run(["ss", "-H", "-tlnp"], capture_output=True, text=True)
+    except FileNotFoundError:
+        return CheckResult("warn", "ss not available — cannot enumerate listening services")
     lines = [l for l in r.stdout.splitlines() if l.strip()]
     if not lines:
         return CheckResult("pass", "no TCP services listening")
@@ -287,8 +394,12 @@ def _check_dot_files_safe() -> CheckResult:
     passwd = Path("/etc/passwd")
     if not passwd.exists():
         return CheckResult("warn", "/etc/passwd not found")
+    try:
+        passwd_text = passwd.read_text()
+    except OSError:
+        return CheckResult("warn", "cannot read /etc/passwd")
     issues = []
-    for line in passwd.read_text().splitlines():
+    for line in passwd_text.splitlines():
         parts = line.split(":")
         if len(parts) >= 6:
             user, uid_str, home = parts[0], parts[2], parts[5]
@@ -399,7 +510,11 @@ def _check_shell_timeout() -> CheckResult:
     for p in files:
         if not p.exists():
             continue
-        m = pattern.search(p.read_text())
+        try:
+            content = p.read_text()
+        except OSError:
+            continue
+        m = pattern.search(content)
         if m:
             val = int(m.group(1))
             if 0 < val <= 900:
@@ -435,7 +550,10 @@ def _check_audit_backlog() -> CheckResult:
     import re
     p = Path("/proc/cmdline")
     if p.exists():
-        text = p.read_text()
+        try:
+            text = p.read_text()
+        except OSError:
+            text = ""
         m = re.search(r"audit_backlog_limit=(\d+)", text)
         if m and int(m.group(1)) >= 8192:
             return CheckResult("pass")
@@ -483,7 +601,12 @@ register(Control(
 def _is_live_persistence() -> bool:
     """True if booted from Debian/Kali Live media with a persistence overlay."""
     cmdline = Path("/proc/cmdline")
-    if not cmdline.exists() or "boot=live" not in cmdline.read_text():
+    if not cmdline.exists():
+        return False
+    try:
+        if "boot=live" not in cmdline.read_text():
+            return False
+    except OSError:
         return False
     persistence_dir = Path("/run/live/persistence")
     if not persistence_dir.exists():
@@ -500,11 +623,15 @@ def _apparmor_service_condition_skipped() -> bool:
     Returns False if the service is not loaded at all (different problem,
     handled by 1.6.1) or if the condition is satisfied (service runs).
     """
-    r = subprocess.run(
-        ["systemctl", "show", "apparmor.service",
-         "--property=LoadState", "--property=ConditionResult"],
-        capture_output=True, text=True,
-    )
+    try:
+        r = subprocess.run(
+            ["systemctl", "show", "apparmor.service",
+             "--property=LoadState", "--property=ConditionResult"],
+            capture_output=True, text=True,
+        )
+    except FileNotFoundError:
+        # No systemd, so no apparmor.service unit to be condition-skipped.
+        return False
     if r.returncode != 0:
         return False
     out = r.stdout
@@ -571,7 +698,10 @@ def _check_forensic_execve() -> CheckResult:
     requirement; the check looks for the syscall + auid filter combination,
     not a specific key name.
     """
-    r = subprocess.run(["auditctl", "-l"], capture_output=True, text=True)
+    try:
+        r = subprocess.run(["auditctl", "-l"], capture_output=True, text=True)
+    except FileNotFoundError:
+        return CheckResult("warn", "auditctl unavailable — cannot inspect loaded rules")
     if r.returncode != 0:
         return CheckResult("warn", "auditctl unavailable — cannot inspect loaded rules")
     for line in r.stdout.splitlines():

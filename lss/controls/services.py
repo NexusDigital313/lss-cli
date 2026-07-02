@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import subprocess
+from pathlib import Path
 
+from lss.lib import journal
 from lss.lib.registry import Control, CheckResult, RollbackEntry, register
 
 
@@ -35,22 +37,32 @@ def _service_is_enabled(name: str) -> bool | None:
 
 
 def _pkg_is_installed(name: str) -> bool:
-    """Check if a package is installed (Debian or RHEL)."""
+    """Check if a package is installed (Debian or RHEL).
+
+    A missing package manager (dpkg-query/rpm not on this host) means the
+    package can't be installed via it — treat as not-installed rather than
+    letting FileNotFoundError escape and crash the caller's check."""
     # Debian family
-    r = subprocess.run(
-        ["dpkg-query", "-W", "-f=${Status}", name],
-        capture_output=True, text=True,
-    )
-    if r.returncode == 0 and "install ok installed" in r.stdout:
-        return True
+    try:
+        r = subprocess.run(
+            ["dpkg-query", "-W", "-f=${Status}", name],
+            capture_output=True, text=True,
+        )
+        if r.returncode == 0 and "install ok installed" in r.stdout:
+            return True
+    except FileNotFoundError:
+        pass
 
     # RHEL family
-    r = subprocess.run(
-        ["rpm", "-q", name],
-        capture_output=True, text=True,
-    )
-    if r.returncode == 0:
-        return True
+    try:
+        r = subprocess.run(
+            ["rpm", "-q", name],
+            capture_output=True, text=True,
+        )
+        if r.returncode == 0:
+            return True
+    except FileNotFoundError:
+        pass
 
     return False
 
@@ -118,9 +130,14 @@ _SERVICES = [
     ("2.2.12", "Ensure HTTP Proxy server is not installed",  "squid",              "squid"),
     ("2.2.13", "Ensure SNMP server is not installed",        "snmpd",              "snmpd"),
     ("2.2.14", "Ensure NIS server is not installed",         "ypserv",             "nis"),
-    ("2.2.15", "Ensure mail transfer agent is local-only",   "postfix",            "postfix"),
     ("2.2.16", "Ensure rsync service is not installed",      "rsync",              "rsync"),
 ]
+
+# 2.2.15 is intentionally NOT in the list above. CIS "mail transfer agent is
+# configured for local-only mode" does NOT mean "disable the MTA" — a mail
+# server bound to loopback is compliant and expected. Disabling/masking postfix
+# (as the generic service handler would) tears down a correctly-configured
+# local MTA. It gets its own check/fix below that only constrains the listener.
 
 
 for _id, _title, _svc, _pkg in _SERVICES:
@@ -143,3 +160,74 @@ for _id, _title, _svc, _pkg in _SERVICES:
         check=_make_check(svc, pkg),
         fix=_make_fix(svc),
     ))
+
+
+# ---- CIS 2.2.15: Ensure mail transfer agent is configured for local-only mode ----
+
+# Loopback-only listener values postfix accepts for inet_interfaces.
+_MTA_LOCAL_VALUES = {"loopback-only", "localhost"}
+
+
+def _postconf(param: str) -> str | None:
+    """Return the effective postfix value for `param`, or None if unavailable."""
+    try:
+        r = subprocess.run(["postconf", "-h", param], capture_output=True, text=True)
+    except FileNotFoundError:
+        return None
+    if r.returncode != 0:
+        return None
+    return r.stdout.strip()
+
+
+def _check_mta_local_only() -> CheckResult:
+    """Pass if postfix listens only on loopback (or isn't installed). We do NOT
+    fail merely because postfix is running — a local-only MTA is compliant."""
+    val = _postconf("inet_interfaces")
+    if val is None:
+        # postconf missing / postfix not configured
+        if not _pkg_is_installed("postfix"):
+            return CheckResult("pass", "no MTA installed")
+        return CheckResult("warn", "postfix installed but inet_interfaces unreadable")
+    low = val.lower()
+    if low in _MTA_LOCAL_VALUES:
+        return CheckResult("pass", f"inet_interfaces={val}")
+    # An explicit interface list is local-only if every entry is a loopback addr.
+    entries = [e.strip().lower() for e in val.replace(",", " ").split() if e.strip()]
+    if entries and all(e in ("127.0.0.1", "::1", "localhost") for e in entries):
+        return CheckResult("pass", f"inet_interfaces={val}")
+    return CheckResult("fail", f"inet_interfaces={val} — should be loopback-only")
+
+
+def _fix_mta_local_only() -> list[RollbackEntry]:
+    """Constrain postfix to loopback. Backs up main.cf, sets inet_interfaces,
+    reloads. Does NOT stop/disable/mask postfix — the MTA keeps working for
+    local delivery."""
+    maincf = Path("/etc/postfix/main.cf")
+    if not maincf.exists():
+        return []
+    bkp = journal.backup_file(str(maincf))
+    r = subprocess.run(
+        ["postconf", "-e", "inet_interfaces=loopback-only"],
+        capture_output=True, text=True,
+    )
+    if r.returncode != 0:
+        raise RuntimeError(f"postconf failed: {r.stderr.strip()}")
+    # Reload (preferred) so live delivery keeps running; fall back to restart.
+    if subprocess.run(["systemctl", "reload", "postfix"], capture_output=True).returncode != 0:
+        subprocess.run(["systemctl", "restart", "postfix"], capture_output=True)
+    return [RollbackEntry(
+        action="set postfix inet_interfaces=loopback-only",
+        path=str(maincf),
+        backup=bkp,
+        # Restore main.cf from backup, then reload so the old listener is live.
+        undo=[["systemctl", "reload", "postfix"]],
+    )]
+
+
+register(Control(
+    id="2.2.15",
+    title="Ensure mail transfer agent is configured for local-only mode",
+    section="services",
+    check=_check_mta_local_only,
+    fix=_fix_mta_local_only,
+))
