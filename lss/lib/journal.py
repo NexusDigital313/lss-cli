@@ -1,3 +1,9 @@
+# Copyright (c) 2026 Jacob Douglas Parmenter. All Rights Reserved.
+# Proprietary and Confidential.
+#
+# Unauthorized copying, modification, distribution, or use of this file, 
+# via any medium, is strictly prohibited without explicit written authorization.
+
 """Rollback journal — records every change made during hardening so it can be undone.
 
 Writes are atomic: temp file + fsync + rename. Backups of modified files are

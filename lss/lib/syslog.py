@@ -1,3 +1,9 @@
+# Copyright (c) 2026 Jacob Douglas Parmenter. All Rights Reserved.
+# Proprietary and Confidential.
+#
+# Unauthorized copying, modification, distribution, or use of this file, 
+# via any medium, is strictly prohibited without explicit written authorization.
+
 """Send LSS audit events to the system log (syslog/journald).
 
 Best-effort: if the syslog socket isn't available, log calls become no-ops so
