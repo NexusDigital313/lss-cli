@@ -547,3 +547,185 @@ def test_persist_fstab_options_rollback_is_line_scoped(tmp_path, monkeypatch):
         "rollback clobbered a sibling control's later edit to a different "
         "mountpoint's line — whole-file backup/restore strikes again"
     )
+
+
+# --- Regression tests for the false-pass check bug class ---
+# A hardening tool that reports "pass" for a control it is not actually
+# enforcing is worse than one that reports nothing: the operator stops
+# looking. Each test below pins a check that used to pass on evidence that
+# did not mean what it looked like — a commented-out example line, a keyword
+# appearing on an unrelated firewall chain, or a module nulled in config but
+# still resident in the running kernel.
+
+
+def test_module_is_disabled_false_when_module_still_loaded(monkeypatch):
+    """A module nulled in modprobe.d but STILL LOADED is not disabled.
+
+    _disable_module writes the install-null directive and then runs `rmmod`.
+    When rmmod fails (module busy — cramfs with a filesystem mounted, sctp
+    held by a running service), the module keeps doing exactly what it did
+    before. The config-first ordering reported those hosts as compliant.
+    """
+    from lss.lib import modules
+
+    monkeypatch.setattr(modules, "module_is_loaded", lambda mod: True)
+    monkeypatch.setattr(modules, "module_install_nulled", lambda mod: True)
+    monkeypatch.setattr(modules, "module_blacklisted", lambda mod: True)
+
+    assert modules.module_is_disabled("cramfs") is False, (
+        "a module that is still loaded was reported as disabled — the "
+        "loaded check must run first and be decisive"
+    )
+
+
+def test_module_blacklisted_ignores_commented_lines(tmp_path, monkeypatch):
+    """A commented-out example directive must not satisfy the check."""
+    from lss.lib import modules
+
+    monkeypatch.setattr(modules, "MODPROBE_D", str(tmp_path))
+    (tmp_path / "distro-template.conf").write_text(
+        "# Example: disable usb storage by uncommenting the next line\n"
+        "# blacklist usb-storage\n"
+        "# install usb-storage /bin/true\n"
+    )
+    assert modules.module_blacklisted("usb-storage") is False, (
+        "a commented-out blacklist line was accepted as an active directive"
+    )
+
+    (tmp_path / "real.conf").write_text("blacklist usb-storage\n")
+    assert modules.module_blacklisted("usb-storage") is True
+
+
+def test_module_blacklisted_requires_exact_token(tmp_path, monkeypatch):
+    """`blacklist hfsplus` must not satisfy a check for `hfs`."""
+    from lss.lib import modules
+
+    monkeypatch.setattr(modules, "MODPROBE_D", str(tmp_path))
+    (tmp_path / "fs.conf").write_text("blacklist hfsplus\n")
+
+    assert modules.module_blacklisted("hfsplus") is True
+    assert modules.module_blacklisted("hfs") is False, (
+        "prefix match: `blacklist hfsplus` wrongly satisfied `hfs`"
+    )
+
+
+def test_ip6tables_established_requires_real_input_accept_rule(monkeypatch):
+    """The word ESTABLISHED on an unrelated chain must not pass.
+
+    The IPv4 sibling was anchored to `-A INPUT ... ESTABLISHED ... ACCEPT`;
+    the IPv6 check kept a bare substring test, so a LOG rule or a rule on
+    another chain mentioning ESTABLISHED reported the host as configured.
+    """
+    from lss.controls import firewall
+
+    monkeypatch.setattr(firewall, "_cmd_exists", lambda c: True)
+    monkeypatch.setattr(firewall, "_ipv6_disabled", lambda: False)
+
+    decoy = (
+        "-A FORWARD -m state --state ESTABLISHED,RELATED -j ACCEPT\n"
+        "-A INPUT -m state --state NEW -j LOG --log-prefix ESTABLISHED-probe\n"
+    )
+    monkeypatch.setattr(firewall, "_ip6tables_rules", lambda: decoy)
+    assert firewall._check_ip6tables_established().status == "fail", (
+        "ESTABLISHED on FORWARD / inside a LOG prefix was accepted as an "
+        "INPUT ACCEPT rule for established IPv6 traffic"
+    )
+
+    real = "-A INPUT -m state --state ESTABLISHED,RELATED -j ACCEPT\n"
+    monkeypatch.setattr(firewall, "_ip6tables_rules", lambda: real)
+    assert firewall._check_ip6tables_established().status == "pass"
+
+
+def test_gdm_autorun_ignores_commented_line(tmp_path, monkeypatch):
+    """A commented-out `autorun-never=true` must not report as enforced."""
+    from lss.controls import gdm
+
+    monkeypatch.setattr(gdm, "_gdm_installed", lambda: True)
+
+    conf = tmp_path / "00-autorun-never"
+    conf.write_text("[org/gnome/desktop/media-handling]\n# autorun-never=true\n")
+
+    real_path = gdm.Path
+    monkeypatch.setattr(
+        gdm, "Path",
+        lambda p: conf if str(p) == "/etc/dconf/db/local.d/00-autorun-never" else real_path(p),
+    )
+    # gsettings fallback must not rescue it either.
+    monkeypatch.setattr(
+        gdm.subprocess, "run",
+        lambda *a, **kw: subprocess.CompletedProcess(args=a, returncode=1, stdout="", stderr=""),
+    )
+
+    assert gdm._check_gdm_autorun().status != "pass", (
+        "a commented-out autorun-never line was accepted as enforcing autorun"
+    )
+
+
+def test_postfix_mta_control_warns_before_applying():
+    """2.2.15 forces inet_interfaces=loopback-only, which cuts outbound mail
+    relay on a host relaying for local apps. It must carry the same pre-flight
+    destructive warning as the other service-disabling controls."""
+    from lss.harden import DESTRUCTIVE_SERVICE_CONTROLS
+
+    assert "2.2.15" in DESTRUCTIVE_SERVICE_CONTROLS, (
+        "the MTA local-only control has no destructive-service warning — an "
+        "unattended harden pass can silently kill outbound mail delivery"
+    )
+    assert "postfix" in DESTRUCTIVE_SERVICE_CONTROLS["2.2.15"].lower()
+
+
+def _drive_harden(tmp_path, monkeypatch, post_fix_status: str) -> int:
+    """Run run_harden over a single stub control whose check returns
+    `post_fix_status` both before and after its (no-op) fix."""
+    from lss.lib import journal, registry
+    from lss import harden
+
+    monkeypatch.setattr(journal, "JOURNAL_DIR", tmp_path / "j")
+    monkeypatch.setattr(journal, "BACKUPS_DIR", tmp_path / "j" / "backups")
+
+    ctrl = registry.Control(
+        id="9.9.9",
+        title="stub",
+        section="auth",
+        check=lambda: registry.CheckResult(post_fix_status, "stub detail"),
+        fix=lambda: [],
+    )
+    monkeypatch.setattr(harden, "get_controls", lambda ids=None: [ctrl])
+    monkeypatch.setattr(harden.syslog, "info", lambda *a, **kw: None)
+    monkeypatch.setattr(harden.syslog, "warn", lambda *a, **kw: None)
+
+    class Args:
+        control = None
+        dry_run = False
+        interactive = False
+        confirm = True
+
+    return harden.run_harden(Args())
+
+
+def test_harden_manual_result_does_not_fail_the_run(tmp_path, monkeypatch):
+    """A control left in `manual` after its fix must not count as a failure.
+
+    5.3.1 and 5.3.2 deliberately automate half the job (write pwquality /
+    faillock config) and report `manual` for the half that needs an operator
+    (wiring the module into the PAM stack). `lss audit` already excludes
+    manual controls from its exit code; harden counting them as
+    "applied-but-still-failing" made `lss harden --confirm` return non-zero
+    on hosts whose automatable settings were entirely correct.
+    """
+    rc = _drive_harden(tmp_path, monkeypatch, "manual")
+    assert rc == 0, (
+        f"harden returned {rc} for a control whose remaining work is operator "
+        "action by design — this breaks CI for correctly-configured hosts"
+    )
+
+
+def test_harden_still_fails_when_fix_does_not_take(tmp_path, monkeypatch):
+    """The converse guarantee: a fix that ran but left the control failing
+    must still be counted and folded into the exit code, or automation reads
+    exit 0 as full success on a non-compliant box."""
+    rc = _drive_harden(tmp_path, monkeypatch, "fail")
+    assert rc > 0, (
+        "a control that was still failing after its fix returned exit 0 — "
+        "the CI non-compliance guarantee has been weakened"
+    )

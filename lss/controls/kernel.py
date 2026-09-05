@@ -10,6 +10,7 @@ import subprocess
 from pathlib import Path
 
 from lss.lib import journal
+from lss.lib.modules import module_is_disabled, module_is_loaded
 from lss.lib.registry import Control, CheckResult, RollbackEntry, register
 from lss.lib.sysctl import get_sysctl as _get_sysctl, set_sysctl as _set_sysctl
 
@@ -206,60 +207,6 @@ _DISABLED_NET_MODULES = [
 ]
 
 
-def _module_is_loaded(mod: str) -> bool:
-    """True if `mod` is loaded now, matching the module name exactly."""
-    try:
-        r = subprocess.run(["lsmod"], capture_output=True, text=True)
-    except FileNotFoundError:
-        return False
-    for line in r.stdout.splitlines()[1:]:  # skip header
-        parts = line.split()
-        if parts and parts[0] == mod:
-            return True
-    return False
-
-
-def _module_blacklisted(mod: str) -> bool:
-    """True if an uncommented modprobe.d directive disables exactly `mod`.
-
-    Token-matches so `blacklist sctp_probe` never satisfies a check for `sctp`,
-    and commented example lines are ignored (the old `grep blacklist {mod}` did
-    both wrong)."""
-    d = Path("/etc/modprobe.d")
-    if not d.is_dir():
-        return False
-    for conf in d.glob("*"):
-        try:
-            text = conf.read_text()
-        except OSError:
-            continue
-        for line in text.splitlines():
-            s = line.strip()
-            if not s or s.startswith("#"):
-                continue
-            toks = s.split()
-            if len(toks) >= 2 and toks[0] == "blacklist" and toks[1] == mod:
-                return True
-            if (len(toks) >= 3 and toks[0] == "install" and toks[1] == mod
-                    and toks[2] in ("/bin/true", "/bin/false")):
-                return True
-    return False
-
-
-def _module_is_disabled(mod: str) -> bool:
-    try:
-        r = subprocess.run(["modprobe", "-n", "--show-depends", mod], capture_output=True, text=True)
-        for line in r.stdout.splitlines():
-            toks = line.split()
-            if len(toks) >= 2 and toks[0] == "install" and toks[1] in ("/bin/true", "/bin/false"):
-                return True
-    except FileNotFoundError:
-        pass
-    if _module_is_loaded(mod):
-        return False
-    return _module_blacklisted(mod)
-
-
 def _disable_module(mod: str) -> list[RollbackEntry]:
     conf_path = f"/etc/modprobe.d/lss-{mod}.conf"
     bkp = journal.backup_file(conf_path)  # "" unless we somehow wrote it before
@@ -278,7 +225,7 @@ for _id, _mod, _title in _DISABLED_NET_MODULES:
 
     def _make_check(m):
         def check():
-            if _module_is_disabled(m):
+            if module_is_disabled(m):
                 return CheckResult("pass")
             return CheckResult("fail", f"{m} is not disabled")
         return check

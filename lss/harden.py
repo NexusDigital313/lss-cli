@@ -57,6 +57,10 @@ DESTRUCTIVE_SERVICE_CONTROLS = {
     "2.2.12": "HTTP proxy (squid)",
     "2.2.13": "SNMP",
     "2.2.14": "NIS server",
+    # Forces inet_interfaces=loopback-only. A host relaying outbound mail for
+    # other local applications (a common multi-purpose setup) loses external
+    # delivery — it is not merely "the MTA stops listening".
+    "2.2.15": "Postfix / MTA (local-only mode cuts off outbound mail relay)",
     "2.2.16": "rsync service",
     # Not a service — a connectivity risk. Disabling IPv6 router-advertisement
     # acceptance drops the box's IPv6 default route on a SLAAC-configured host,
@@ -160,6 +164,7 @@ def run_harden(args) -> int:
 
     journal_entries: dict[str, list[dict]] = {}
     applied = skipped = failed = would_fix = declined = not_verified = 0
+    manual_remaining = 0
     aborted = False
 
     for ctrl in controls:
@@ -249,6 +254,23 @@ def run_harden(args) -> int:
                 )
                 syslog.info(f"harden fix run_id={run_id} control={ctrl.id} status=fixed")
                 applied += 1
+            elif verify.status == "manual":
+                # The automatable half is done and the remainder is operator
+                # action BY DESIGN (e.g. 5.3.1 writes the pwquality values but
+                # cannot wire pam_pwquality.so into the PAM stack; 5.3.2 the
+                # same for pam_faillock). That is not a failed fix, and `lss
+                # audit` already excludes manual controls from its exit code —
+                # counting it as not-verified here inflated the count and the
+                # exit code for hosts whose automatable settings were correct.
+                print(
+                    f"{YELLOW}  !{RESET} {ctrl.id}   {ctrl.title}   "
+                    f"{DIM}(fix applied; operator action still required: {verify.detail}){RESET}"
+                )
+                syslog.warn(
+                    f"harden fix run_id={run_id} control={ctrl.id} "
+                    f"status=applied-manual-remaining detail={verify.detail!r}"
+                )
+                manual_remaining += 1
             else:
                 print(
                     f"{YELLOW}  !{RESET} {ctrl.id}   {ctrl.title}   "
@@ -310,14 +332,20 @@ def run_harden(args) -> int:
 
     print()
     not_verified_note = f"   Applied-but-still-failing: {not_verified}" if not_verified else ""
-    info(f"Applied: {applied}   Skipped (already pass): {skipped}   Failed: {failed}{not_verified_note}{interactive_note}")
+    manual_note = f"   Needs operator action: {manual_remaining}" if manual_remaining else ""
+    info(f"Applied: {applied}   Skipped (already pass): {skipped}   Failed: {failed}{not_verified_note}{manual_note}{interactive_note}")
+    if manual_remaining:
+        warn(f"{manual_remaining} control(s) had their automatable part applied but "
+             f"still need a manual step (see the detail above). These do NOT count "
+             f"toward the exit code, matching how `lss audit` reports manual controls.")
     if not_verified:
         warn(f"{not_verified} control(s) had a fix applied but did NOT reach a "
              f"passing state — the host is not fully compliant. Re-run `lss audit` "
              f"and review those controls.")
     syslog.info(
         f"harden complete run_id={run_id} applied={applied} "
-        f"skipped={skipped} failed={failed} not_verified={not_verified}"
+        f"skipped={skipped} failed={failed} not_verified={not_verified} "
+        f"manual_remaining={manual_remaining}"
     )
     if journal_entries:
         info(f"Rollback journal: {jpath}")

@@ -388,7 +388,11 @@ def _check_gdm_autorun() -> CheckResult:
                 text = p.read_text()
             except OSError:
                 continue
-            if "autorun-never=true" in text.replace(" ", ""):
+            # Anchored + comment-aware, matching _check_gdm_automount. The old
+            # substring test on space-stripped text passed on a commented-out
+            # example line (`# autorun-never=true`), reporting autorun as
+            # disabled when nothing was enforcing it.
+            if re.search(r"^\s*autorun-never\s*=\s*true", text, re.MULTILINE):
                 return CheckResult("pass")
     try:
         r = subprocess.run(

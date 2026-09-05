@@ -13,6 +13,9 @@ import subprocess
 from pathlib import Path
 
 from lss.lib import journal
+from lss.lib.modules import (
+    module_blacklisted, module_install_nulled, module_is_disabled, module_is_loaded,
+)
 from lss.lib.registry import Control, CheckResult, RollbackEntry, register
 from lss.lib.sshd import get_sshd_setting as _get_sshd_setting, set_sshd_setting as _set_sshd_setting, LSS_SSHD_CONF
 
@@ -182,20 +185,20 @@ register(Control(
 # ---- CIS 1.1.15: Ensure USB storage is disabled ----
 
 def _check_usb_storage() -> CheckResult:
-    try:
-        r = subprocess.run(["modprobe", "-n", "--show-depends", "usb-storage"],
-                           capture_output=True, text=True)
-        if "/bin/true" in r.stdout or "/bin/false" in r.stdout:
-            return CheckResult("pass")
-    except FileNotFoundError:
-        pass
-    try:
-        r2 = subprocess.run(["grep", "-r", "blacklist usb-storage", "/etc/modprobe.d/"],
-                            capture_output=True, text=True)
-        if r2.returncode == 0 and r2.stdout.strip():
-            return CheckResult("pass")
-    except FileNotFoundError:
-        pass
+    # Shared helper: token-matches uncommented directives and treats a module
+    # that is still loaded as NOT disabled. The old `grep -r "blacklist
+    # usb-storage" /etc/modprobe.d/` passed on a commented-out example line
+    # shipped in a distro template, reporting usb-storage as disabled when
+    # nothing was enforcing it.
+    if module_is_disabled("usb-storage"):
+        return CheckResult("pass")
+    configured_off = module_install_nulled("usb-storage") or module_blacklisted("usb-storage")
+    if configured_off and module_is_loaded("usb-storage"):
+        return CheckResult(
+            "fail",
+            "usb-storage is configured as disabled but is still loaded in the "
+            "running kernel — unload it (`rmmod usb-storage`) or reboot",
+        )
     return CheckResult(
         "manual",
         "usb-storage not disabled — blacklist by hand "
