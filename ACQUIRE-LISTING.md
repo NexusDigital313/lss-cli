@@ -44,7 +44,7 @@ compares" for the full table.
 ## Codebase signals
 
 - **Coverage**: 206 hardening controls registered (201 CIS-aligned + 5
-  LSS-XXX). 172 of 206 (83.5%) are auto-fixable; the remaining 34 are
+  LSS-XXX). 166 of 206 (80.6%) are auto-fixable; the remaining 40 are
   audit-only by design (each documents *why* in the source — bootloader
   edits, partition layout, PAM stack edits, evidence-destruction risks).
 - **Tests**: 1,024 passing unit tests (23 platform-skipped). The `test_per_control.py`

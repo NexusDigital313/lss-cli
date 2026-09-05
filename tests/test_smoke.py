@@ -729,3 +729,48 @@ def test_harden_still_fails_when_fix_does_not_take(tmp_path, monkeypatch):
         "a control that was still failing after its fix returned exit 0 — "
         "the CI non-compliance guarantee has been weakened"
     )
+
+
+def test_documented_coverage_numbers_match_the_registry():
+    """The auto-fix / audit-only counts in README and ACQUIRE-LISTING must
+    match what the registry actually reports.
+
+    These drifted apart unnoticed: the listing claimed 172 auto-fixable, the
+    README 167, the registry had 166. Nothing checked, so nothing caught it.
+    For a product whose pitch is an honest coverage story — and a listing a
+    buyer reads as a factual claim — that number needs a test behind it.
+    Update the docs and this test together when coverage really changes.
+    """
+    import re as _re
+
+    import lss.list_controls  # noqa: F401
+    from lss.lib.registry import get_controls
+
+    ctrls = get_controls()
+    fixable = sum(1 for c in ctrls if c.fix is not None)
+    audit_only = sum(1 for c in ctrls if c.fix is None)
+    assert fixable + audit_only == len(ctrls)
+
+    root = Path(__file__).resolve().parent.parent
+
+    readme = (root / "README.md").read_text()
+    for claimed in _re.findall(r"auto-fixes \*\*(\d+) of them\*\*", readme):
+        assert int(claimed) == fixable, (
+            f"README claims {claimed} auto-fixable, registry has {fixable}"
+        )
+    for claimed in _re.findall(r"\*\*Automated fix\*\* \| (\d+) ", readme):
+        assert int(claimed) == fixable
+    for claimed in _re.findall(r"\*\*Audit-only by design\*\* \| (\d+) ", readme):
+        assert int(claimed) == audit_only
+
+    listing = root / "ACQUIRE-LISTING.md"
+    if listing.exists():
+        m = _re.search(r"(\d+) of (\d+) \([\d.]+%\) are auto-fixable; the remaining (\d+)",
+                       listing.read_text())
+        assert m, "ACQUIRE-LISTING coverage sentence changed shape — update this test"
+        assert int(m.group(1)) == fixable, (
+            f"ACQUIRE-LISTING claims {m.group(1)} auto-fixable, registry has {fixable} "
+            "— a buyer reads this as a factual claim"
+        )
+        assert int(m.group(2)) == len(ctrls)
+        assert int(m.group(3)) == audit_only
