@@ -774,3 +774,35 @@ def test_documented_coverage_numbers_match_the_registry():
         )
         assert int(m.group(2)) == len(ctrls)
         assert int(m.group(3)) == audit_only
+
+
+def test_per_key_sysctl_files_outsort_stock_and_legacy_dropins():
+    """Per-key drop-ins must be the LAST sysctl.d file applied for their key.
+
+    sysctl.d is read in lexicographic filename order and the last setting
+    for a key wins. Two files must lose to ours:
+
+      99-sysctl.conf      — stock Debian/Ubuntu symlink to /etc/sysctl.conf
+      99-zzz-lss.conf     — the shared drop-in written by installs predating
+                            the per-key split
+
+    The second is the subtle one. '-' (0x2D) sorts before '.' (0x2E), so the
+    obvious `99-zzz-lss-<key>.conf` name would sort BEFORE the legacy file
+    and lose to it — an upgraded host would keep applying its stale values
+    at boot while the audit, reading the running kernel right after
+    `sysctl -w`, reported the new ones as applied.
+    """
+    from lss.lib import sysctl
+
+    ours = Path(sysctl._conf_path_for("net.ipv4.ip_forward")).name
+    stock = "99-sysctl.conf"
+    legacy = Path(sysctl.LEGACY_SYSCTL_CONF).name
+
+    assert ours > stock, (
+        f"{ours} sorts before stock {stock}; hardened values would revert at boot"
+    )
+    assert ours > legacy, (
+        f"{ours} sorts before legacy {legacy}; on a host upgraded from an "
+        "older install the stale shared drop-in would win at boot"
+    )
+    assert sorted([stock, legacy, ours])[-1] == ours

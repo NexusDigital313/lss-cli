@@ -22,9 +22,15 @@ from lss.lib.registry import RollbackEntry
 # A 99-zzz- prefix sorts after 99-sysctl.conf ('z' > 's'), so LSS wins.
 SYSCTL_CONF_DIR = "/etc/sysctl.d"
 
+# Written by installs predating the per-key split. Never written now, but a
+# host upgraded from one still has it on disk, so per-key names must outsort
+# it (see _conf_path_for). Kept as a named constant so the ordering test can
+# assert against the real thing rather than a copy of the string.
+LEGACY_SYSCTL_CONF = f"{SYSCTL_CONF_DIR}/99-zzz-lss.conf"
+
 
 def _conf_path_for(key: str) -> str:
-    """Per-key LSS drop-in path, e.g. net.ipv4.ip_forward -> 99-zzz-lss-netipv4ipforward.conf.
+    """Per-key LSS drop-in path, e.g. net.ipv4.ip_forward -> 99-zzzz-lss-netipv4ipforward.conf.
 
     One key per file means each control's backup/restore/remove on rollback
     can never disturb another control's persisted setting. Mirrors
@@ -34,9 +40,16 @@ def _conf_path_for(key: str) -> str:
     that file (`rm -f` in its undo) deleted every other control's persisted
     setting too, and rolling back any other single control restored a stale
     whole-file backup that clobbered whatever was appended after it.
+
+    The prefix is 99-zzzz-, not 99-zzz-, specifically so these sort AFTER a
+    LEGACY_SYSCTL_CONF left behind by an older install. '-' (0x2D) sorts
+    before '.' (0x2E), so a 99-zzz-lss-<key>.conf would lose to a lingering
+    99-zzz-lss.conf and the operator's hardened value would silently revert
+    at boot — the exact failure the 99-zzz- prefix was chosen to avoid in
+    the first place. No migration needed: the stale file simply loses.
     """
     safe = re.sub(r"[^a-z0-9]", "", key.lower())
-    return f"{SYSCTL_CONF_DIR}/99-zzz-lss-{safe}.conf"
+    return f"{SYSCTL_CONF_DIR}/99-zzzz-lss-{safe}.conf"
 
 
 def get_sysctl(key: str) -> str | None:
