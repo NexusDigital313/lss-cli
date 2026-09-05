@@ -1,3 +1,13 @@
+<!--
+  Copyright (c) 2026 Jacob Douglas Parmenter. All Rights Reserved.
+  Proprietary and Confidential.
+
+  Unauthorized reproduction, copying, modification, distribution,
+  redistribution, publication, reverse engineering, decompilation, or
+  disassembly of this file, in whole or in part, via any medium, is
+  strictly prohibited without explicit prior written authorization.
+-->
+
 # LSS Roadmap — work to elevate v1.0.0 toward $10k-tier ship
 
 Compiled 2026-05-01 from in-session discussion. Items are tiered by impact at the $10k commercial-sale tier (vendor security review, regulated-industry buyer). Add to this list each session; do not ship until the P0 block is closed.

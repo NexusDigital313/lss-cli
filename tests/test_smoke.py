@@ -1,8 +1,10 @@
 # Copyright (c) 2026 Jacob Douglas Parmenter. All Rights Reserved.
 # Proprietary and Confidential.
 #
-# Unauthorized copying, modification, distribution, or use of this file, 
-# via any medium, is strictly prohibited without explicit written authorization.
+# Unauthorized reproduction, copying, modification, distribution,
+# redistribution, publication, reverse engineering, decompilation, or
+# disassembly of this file, in whole or in part, via any medium, is
+# strictly prohibited without explicit prior written authorization.
 
 """Smoke tests — fast, no-root, catch regressions in registry, journal, rollback, report."""
 

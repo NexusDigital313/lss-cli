@@ -1,3 +1,13 @@
+<!--
+  Copyright (c) 2026 Jacob Douglas Parmenter. All Rights Reserved.
+  Proprietary and Confidential.
+
+  Unauthorized reproduction, copying, modification, distribution,
+  redistribution, publication, reverse engineering, decompilation, or
+  disassembly of this file, in whole or in part, via any medium, is
+  strictly prohibited without explicit prior written authorization.
+-->
+
 # Pre-launch test plan
 
 What to verify on a real Debian 12 host before sending v1.0.0 to a paying customer. This checklist exists because the per-control fixes have not all been individually exercised against a clean install.

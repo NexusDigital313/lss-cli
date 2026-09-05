@@ -1,4 +1,12 @@
 #!/usr/bin/env bash
+# Copyright (c) 2026 Jacob Douglas Parmenter. All Rights Reserved.
+# Proprietary and Confidential.
+#
+# Unauthorized reproduction, copying, modification, distribution,
+# redistribution, publication, reverse engineering, decompilation, or
+# disassembly of this file, in whole or in part, via any medium, is
+# strictly prohibited without explicit prior written authorization.
+
 # Build the LSS release: wheel + sdist + checksums into ./dist.
 # Run this before you try to `pip install` anything — the wheel does not
 # exist in the repo, you produce it here.
