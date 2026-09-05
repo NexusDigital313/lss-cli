@@ -263,8 +263,9 @@ def test_syslog_helper_never_raises():
 
 
 # --- Regression tests for the multi-control-same-file rollback bug class ---
-# When several controls modify the same file in one harden run, three things
-# must hold for rollback to truly undo everything:
+# When several controls modify the same file in one harden run, things must
+# hold for rollback to truly undo everything without clobbering a sibling
+# control's changes:
 #   1. The OUTER loop in rollback.run_rollback iterates controls in REVERSE
 #      application order (so an early control's `rm -f` runs LAST, after later
 #      controls have stopped restoring their backups onto a recreated file).
@@ -272,8 +273,14 @@ def test_syslog_helper_never_raises():
 #      otherwise repeated backups overwrite each other and the journal entry's
 #      "backup" field points to the wrong snapshot.
 #   3. A control that CREATES a persistence file (no prior backup) must emit
-#      `rm -f` in its undo, otherwise the file survives rollback. sshd.py
-#      gets this right; sysctl.py 0.5.1 missed it.
+#      `rm -f` in its undo, otherwise the file survives rollback.
+#   4. Best of all: don't actually SHARE a file across controls when it can be
+#      avoided. sshd.py and sysctl.py give each control its own drop-in file,
+#      so `--control`-scoped rollback of one control can never touch another's
+#      settings regardless of run ordering. Where a shared file can't be
+#      avoided (fstab has one line per mountpoint, sometimes edited by more
+#      than one control), the undo must be scoped to that control's own exact
+#      line rather than a whole-file backup/restore.
 
 
 def test_rollback_outer_loop_reverses_controls(tmp_path, monkeypatch):
@@ -368,17 +375,16 @@ def test_backup_file_produces_unique_paths_for_repeated_calls(tmp_path, monkeypa
 
 
 def test_sysctl_set_emits_rm_f_when_creating_persistence_file(tmp_path, monkeypatch):
-    """sysctl.set_sysctl must add `rm -f SYSCTL_CONF` to undo when the
-    persistence file did not exist before this control ran.
+    """sysctl.set_sysctl must add `rm -f` to undo, scoped to THIS key's own
+    per-key file, when that file did not exist before this control ran.
 
     Without this, the dropfile survives rollback and `lss audit` keeps
-    reporting the post-harden state. sshd.py:set_sysctl_setting has the
-    correct shape — sysctl.py must mirror it.
+    reporting the post-harden state. sshd.py:set_sshd_setting has the
+    correct shape — sysctl.py mirrors it with one file per key.
     """
     from lss.lib import sysctl, journal
 
-    sysctl_conf = tmp_path / "80-lss.conf"  # does NOT exist yet
-    monkeypatch.setattr(sysctl, "SYSCTL_CONF", str(sysctl_conf))
+    monkeypatch.setattr(sysctl, "SYSCTL_CONF_DIR", str(tmp_path))
     monkeypatch.setattr(journal, "BACKUPS_DIR", tmp_path / "backups")
     journal.set_current_run_id("test-run")
 
@@ -390,10 +396,154 @@ def test_sysctl_set_emits_rm_f_when_creating_persistence_file(tmp_path, monkeypa
     monkeypatch.setattr(sysctl, "get_sysctl", lambda k: None)
 
     entry = sysctl.set_sysctl("kernel.example_key", "1")
+    expected_path = sysctl._conf_path_for("kernel.example_key")
 
-    assert ["rm", "-f", str(sysctl_conf)] in entry.undo, (
+    assert ["rm", "-f", expected_path] in entry.undo, (
         "sysctl.set_sysctl did not add `rm -f` to undo for a freshly-created "
-        "persistence file — rollback will leave the dropfile behind"
+        "per-key persistence file — rollback will leave the dropfile behind"
     )
 
     journal.set_current_run_id(None)
+
+
+def test_sysctl_rollback_of_one_key_keeps_another_keys_setting(tmp_path, monkeypatch):
+    """Two controls each set a sysctl key; undoing ONE must leave the other's
+    persisted setting intact.
+
+    Regression test for the pre-fix design where every key was appended to a
+    single shared drop-in file. The first control to run took no backup (the
+    file did not exist yet), so its undo was a bare `rm -f` on that shared
+    file — and running it deleted every OTHER control's persisted setting
+    along with its own. Driving this through set_sysctl (rather than a
+    hand-built journal) is the point: the defect lived in how set_sysctl
+    chose its persistence path, not in the rollback engine.
+    """
+    from lss.lib import sysctl, journal
+
+    # Grab the real runner BEFORE stubbing: `sysctl.subprocess` is the shared
+    # subprocess module, so the stub below would otherwise swallow the undo
+    # commands this test needs to actually execute.
+    real_run = subprocess.run
+
+    monkeypatch.setattr(sysctl, "SYSCTL_CONF_DIR", str(tmp_path))
+    monkeypatch.setattr(journal, "BACKUPS_DIR", tmp_path / "backups")
+    journal.set_current_run_id("test-run")
+
+    monkeypatch.setattr(
+        sysctl.subprocess, "run",
+        lambda *a, **kw: subprocess.CompletedProcess(args=a, returncode=0, stdout="", stderr=""),
+    )
+    monkeypatch.setattr(sysctl, "get_sysctl", lambda k: None)
+
+    entry_a = sysctl.set_sysctl("net.ipv4.ip_forward", "0")
+    entry_b = sysctl.set_sysctl("kernel.randomize_va_space", "2")
+
+    path_a = Path(sysctl._conf_path_for("net.ipv4.ip_forward"))
+    path_b = Path(sysctl._conf_path_for("kernel.randomize_va_space"))
+
+    assert path_a != path_b, "two different sysctl keys shared one persistence file"
+    assert path_a.exists() and path_b.exists()
+
+    # Roll back ONLY control A, exactly as `lss rollback --control` would.
+    for argv in entry_a.undo:
+        real_run(argv, check=True)
+
+    assert not path_a.exists(), "control A's own persisted setting survived its rollback"
+    assert path_b.read_text() == "kernel.randomize_va_space = 2\n", (
+        "rolling back control A destroyed control B's persisted sysctl setting"
+    )
+    assert entry_b.undo, "control B should still carry its own independent undo"
+
+    journal.set_current_run_id(None)
+
+
+def test_restore_backup_warns_without_run_timestamp(tmp_path, monkeypatch):
+    """A journal with a missing/malformed run timestamp (run_epoch=None) must
+    still warn before overwriting a file the operator edited after hardening.
+
+    The run-timestamp comparison was introduced to stop the old backup-mtime
+    check from firing on every rollback, but it silently dropped the check
+    entirely when the timestamp couldn't be parsed — so an operator's manual
+    edits got clobbered with no warning at all. None must fall back, not skip.
+    """
+    import os
+    from lss import rollback
+
+    backup = tmp_path / "sshd_config.bak"
+    live = tmp_path / "sshd_config"
+    backup.write_text("original\n")
+    live.write_text("operator edited this after harden\n")
+
+    # Backup holds the pre-harden mtime; live file was touched later.
+    os.utime(backup, (1_000_000, 1_000_000))
+    os.utime(live, (2_000_000, 2_000_000))
+
+    warnings: list[str] = []
+    monkeypatch.setattr(rollback, "warn", lambda msg: warnings.append(msg))
+
+    ok, _ = rollback._restore_backup("5.2.1", str(backup), str(live), run_epoch=None)
+
+    assert ok
+    assert warnings, (
+        "no warning issued when the journal had no usable run timestamp — "
+        "the operator's post-harden edits were overwritten silently"
+    )
+    assert "modified after the harden run" in warnings[0]
+    assert live.read_text() == "original\n", "restore should still happen after warning"
+
+
+def test_persist_fstab_options_rollback_is_line_scoped(tmp_path, monkeypatch):
+    """Rolling back one mount-option control's fstab edit must restore only
+    that control's own line, and must not touch other mountpoints' entries.
+
+    Regression test for the pre-fix design where a whole-file backup/restore
+    of fstab meant rolling back one control (e.g. /var/tmp's 1.1.10) could
+    wipe out another control's later edit to a different mountpoint's line
+    (e.g. /home's 1.1.13), since the snapshot predated it.
+    """
+    import subprocess as sp
+    from lss.controls import mounts
+    from lss.lib import journal
+
+    fstab = tmp_path / "fstab"
+    fstab.write_text(
+        "UUID=root-uuid / ext4 defaults 0 1\n"
+        "UUID=tmp-uuid /var/tmp ext4 defaults 0 2\n"
+        "UUID=home-uuid /home ext4 defaults 0 2\n"
+    )
+    monkeypatch.setattr(mounts, "FSTAB", str(fstab))
+    monkeypatch.setattr(journal, "BACKUPS_DIR", tmp_path / "backups")
+    journal.set_current_run_id("test-run")
+
+    entry = mounts._persist_fstab_options("/var/tmp", ["nodev", "nosuid", "noexec"])
+    assert entry is not None
+    journal.set_current_run_id(None)
+
+    # The snapshot exists for manual recovery, but must NOT be wired to the
+    # automatic whole-file restore path (that's what clobbered siblings).
+    assert entry.backup, "fstab should still be snapshotted for manual recovery"
+    assert not entry.path, (
+        "fstab entry carries a `path`, so rollback will whole-file restore it "
+        "over any sibling control's later edit — the bug this fix removed"
+    )
+
+    # Simulate another control editing a DIFFERENT line after this one.
+    text = fstab.read_text().replace(
+        "UUID=home-uuid /home ext4 defaults 0 2",
+        "UUID=home-uuid /home ext4 defaults,nodev 0 2",
+    )
+    fstab.write_text(text)
+
+    sp.run(entry.undo[0], check=True)
+
+    result = fstab.read_text()
+    assert "UUID=tmp-uuid /var/tmp ext4 defaults 0 2" in result, (
+        "rollback did not restore the original /var/tmp line"
+    )
+    assert "UUID=root-uuid / ext4 defaults 0 1" in result, (
+        "rollback touched an unrelated fstab line"
+    )
+    assert "UUID=home-uuid /home ext4 defaults,nodev 0 2" in result, (
+        "rollback clobbered a sibling control's later edit to a different "
+        "mountpoint's line — whole-file backup/restore strikes again"
+    )

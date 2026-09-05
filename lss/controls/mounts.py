@@ -8,23 +8,53 @@
 
 from __future__ import annotations
 
+import re
 import subprocess
 from pathlib import Path
 
 from lss.lib import journal
 from lss.lib.registry import Control, CheckResult, RollbackEntry, register
 
+FSTAB = "/etc/fstab"
+
+
+def _sed_pattern_escape(s: str) -> str:
+    """Escape literal text for use inside a sed BRE pattern delimited by `|`."""
+    return re.sub(r"([.\\^$*\[\]|])", r"\\\1", s)
+
+
+def _sed_replacement_escape(s: str) -> str:
+    """Escape literal text for use as a sed s/// replacement delimited by `|`."""
+    return s.replace("\\", "\\\\").replace("|", "\\|").replace("&", "\\&")
+
 
 def _persist_fstab_options(mountpoint: str, required_opts: list[str]) -> RollbackEntry | None:
     """Add `required_opts` to the existing /etc/fstab entry for `mountpoint`.
 
     A `mount -o remount` alone is lost on reboot, so hardening would silently
-    revert while being reported as fixed. This persists the options to fstab
-    (backed up so rollback restores the original line). Returns None if there's
-    no fstab entry for the mountpoint (e.g. a systemd-managed tmpfs) or the
-    options are already present — we never invent a new device line, since a
-    wrong fstab entry can make the box fail to boot."""
-    fstab = Path("/etc/fstab")
+    revert while being reported as fixed. This persists the options to fstab.
+    Returns None if there's no fstab entry for the mountpoint (e.g. a
+    systemd-managed tmpfs) or the options are already present — we never
+    invent a new device line, since a wrong fstab entry can make the box fail
+    to boot.
+
+    Several controls can touch the SAME fstab line (e.g. /var/tmp is edited
+    by 1.1.10, 1.1.11, and 1.1.12; /home by 1.1.13 and 1.1.14). A whole-file
+    backup/restore would let rolling back one of them clobber whatever a
+    sibling control (or a run that happened afterward) added to that same
+    line since. Instead, the undo is a sed replacement matched against this
+    control's own exact new line text, reverting it back to the exact old
+    line — surgical regardless of what else touched fstab in between.
+
+    Known limit: if a sibling control edits the same line afterward, this
+    control's pattern no longer matches and the sed is a no-op. It exits 0
+    either way, so rollback reports success without having changed anything.
+    That is deliberate — leaving a sibling's option in place is a far better
+    failure than restoring a stale whole-file snapshot over it. fstab is
+    still snapshotted below for manual recovery, since a bad fstab can stop
+    the host booting; it is just not wired to automatic whole-file restore.
+    """
+    fstab = Path(FSTAB)
     if not fstab.exists():
         return None
     lines = fstab.read_text().splitlines(keepends=True)
@@ -41,13 +71,20 @@ def _persist_fstab_options(mountpoint: str, required_opts: list[str]) -> Rollbac
             return None  # already persisted
         fields[3] = ",".join(opts + missing)
         eol = "\n" if raw.endswith("\n") else ""
-        # Back up BEFORE writing so rollback restores the exact original line.
+        old_text = raw[:-1] if raw.endswith("\n") else raw
+        new_line = " ".join(fields) + eol
+        new_text = new_line[:-1] if new_line.endswith("\n") else new_line
+        # Snapshot for manual recovery only — deliberately NOT paired with a
+        # `path`, so rollback never whole-file restores it over a sibling's edit.
         bkp = journal.backup_file(str(fstab))
-        lines[i] = " ".join(fields) + eol
+        lines[i] = new_line
         fstab.write_text("".join(lines))
+        sed_expr = (
+            f"s|^{_sed_pattern_escape(new_text)}$|{_sed_replacement_escape(old_text)}|"
+        )
         return RollbackEntry(
             action=f"added {','.join(missing)} to {mountpoint} in /etc/fstab",
-            path=str(fstab),
+            undo=[["sed", "-i", sed_expr, str(fstab)]],
             backup=bkp,
         )
     return None

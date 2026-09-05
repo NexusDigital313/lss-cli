@@ -32,16 +32,26 @@ def _restore_backup(control_id: str, backup: str, path: str,
     mtime, so a backup-vs-live comparison would fire on every rollback (harden
     always rewrites the file). Comparing against the run time only flags files
     an operator (or another process) touched after LSS hardened them.
+
+    If the journal's run timestamp is missing or malformed, run_epoch is None
+    and we fall back to the noisier backup-mtime comparison (fires on every
+    rollback of a touched file) rather than silently skipping the check —
+    a false-positive warning is far cheaper than clobbering an operator's
+    manual edit with no warning at all.
     """
     src = Path(backup)
     dst = Path(path)
     if not src.exists():
         return False, f"backup file missing: {backup}"
 
-    if dst.exists() and run_epoch is not None:
+    if dst.exists():
         try:
             live_mtime = dst.stat().st_mtime
-            if live_mtime > run_epoch + 1:  # 1s grace for FS resolution
+            if run_epoch is not None:
+                modified_since_harden = live_mtime > run_epoch + 1  # 1s grace for FS resolution
+            else:
+                modified_since_harden = live_mtime > src.stat().st_mtime + 1
+            if modified_since_harden:
                 warn(f"  {control_id}   {path} was modified after the harden run — restoring anyway will overwrite those changes")
         except OSError:
             pass

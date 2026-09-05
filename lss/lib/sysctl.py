@@ -8,6 +8,7 @@
 
 from __future__ import annotations
 
+import re
 import subprocess
 from pathlib import Path
 
@@ -18,8 +19,24 @@ from lss.lib.registry import RollbackEntry
 # setting for a key wins. Stock Debian/Ubuntu ship /etc/sysctl.d/99-sysctl.conf
 # (a symlink to /etc/sysctl.conf); an 80-* file loses to it, so hardened params
 # silently revert at boot while the immediate `sysctl -w` made the audit pass.
-# A 99-zzz- name sorts after 99-sysctl.conf ('z' > 's'), so LSS wins.
-SYSCTL_CONF = "/etc/sysctl.d/99-zzz-lss.conf"
+# A 99-zzz- prefix sorts after 99-sysctl.conf ('z' > 's'), so LSS wins.
+SYSCTL_CONF_DIR = "/etc/sysctl.d"
+
+
+def _conf_path_for(key: str) -> str:
+    """Per-key LSS drop-in path, e.g. net.ipv4.ip_forward -> 99-zzz-lss-netipv4ipforward.conf.
+
+    One key per file means each control's backup/restore/remove on rollback
+    can never disturb another control's persisted setting. Mirrors
+    sshd.py:_conf_path_for, which fixed the identical shared-file hazard for
+    sshd_config in v1.0.2 — sysctl.py had not caught up: it used one shared
+    SYSCTL_CONF file, so rolling back the control that happened to create
+    that file (`rm -f` in its undo) deleted every other control's persisted
+    setting too, and rolling back any other single control restored a stale
+    whole-file backup that clobbered whatever was appended after it.
+    """
+    safe = re.sub(r"[^a-z0-9]", "", key.lower())
+    return f"{SYSCTL_CONF_DIR}/99-zzz-lss-{safe}.conf"
 
 
 def get_sysctl(key: str) -> str | None:
@@ -37,52 +54,40 @@ def get_sysctl(key: str) -> str | None:
 
 
 def set_sysctl(key: str, value: str) -> RollbackEntry:
-    """Set a sysctl value at runtime and persist it in /etc/sysctl.d/.
+    """Set a sysctl value at runtime and persist it in its own /etc/sysctl.d/ file.
 
     Returns a RollbackEntry that, on rollback:
-      - restores the previous SYSCTL_CONF from backup
-        (which may be empty/absent if the file did not exist before), and
+      - restores this key's own file from backup, or removes it if this
+        control created it (safe: no other control ever shares this file), and
       - replays `sysctl -w` with the previous in-memory value.
     """
     old = get_sysctl(key) or ""
 
-    # Snapshot the persisted-rules file BEFORE any modification.
-    bkp = journal.backup_file(SYSCTL_CONF)
+    conf_path = _conf_path_for(key)
+    p = Path(conf_path)
+    p.parent.mkdir(parents=True, exist_ok=True)
+
+    # Snapshot BEFORE any modification.
+    bkp = journal.backup_file(conf_path)
 
     # Apply at runtime.
     subprocess.run(["sysctl", "-w", f"{key}={value}"], capture_output=True, check=True)
 
-    # Persist: replace existing line for this key, or append.
-    p = Path(SYSCTL_CONF)
-    p.parent.mkdir(parents=True, exist_ok=True)
-    existing = p.read_text() if p.exists() else ""
-    lines = existing.splitlines(keepends=True)
-    new_line = f"{key} = {value}\n"
-    found = False
-    for i, line in enumerate(lines):
-        stripped = line.strip()
-        if stripped.startswith(f"{key} ") or stripped.startswith(f"{key}="):
-            lines[i] = new_line
-            found = True
-            break
-    if not found:
-        if lines and not lines[-1].endswith("\n"):
-            lines.append("\n")
-        lines.append(new_line)
-    p.write_text("".join(lines))
+    # Persist. One key per file, so no read/replace-line dance needed.
+    p.write_text(f"{key} = {value}\n")
 
     # Build the undo: replay the previous in-memory value if there was one,
-    # and if this control was the first to create the persistence file,
-    # delete it on rollback. Mirrors the sshd.py pattern.
+    # and if this control was the first to create its file, delete it on
+    # rollback — safe now, since this file holds only this control's key.
     undo: list[list[str]] = []
     if old:
         undo.append(["sysctl", "-w", f"{key}={old}"])
     if not bkp:
-        undo.append(["rm", "-f", SYSCTL_CONF])
+        undo.append(["rm", "-f", conf_path])
 
     return RollbackEntry(
         action=f"set {key} = {value}",
         undo=undo,
-        path=SYSCTL_CONF,
+        path=conf_path,
         backup=bkp,
     )
