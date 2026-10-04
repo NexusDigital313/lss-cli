@@ -489,9 +489,13 @@ def _check_ip6tables_established() -> CheckResult:
     if _ipv6_disabled():
         return CheckResult("pass", "IPv6 is disabled")
     rules = _ip6tables_rules()
-    if "ESTABLISHED" in rules:
-        return CheckResult("pass")
-    return CheckResult("fail", "no ESTABLISHED rule in ip6tables")
+    # Require an actual INPUT ACCEPT rule for ESTABLISHED traffic, not merely
+    # the word "ESTABLISHED" appearing anywhere (e.g. in a LOG rule, a comment,
+    # or on a FORWARD chain). Mirrors the IPv4 sibling's anchoring.
+    for line in rules.splitlines():
+        if line.startswith("-A INPUT") and "ESTABLISHED" in line and "ACCEPT" in line:
+            return CheckResult("pass")
+    return CheckResult("fail", "no INPUT ACCEPT rule for ESTABLISHED connections found")
 
 
 def _fix_ip6tables_established() -> list[RollbackEntry]:

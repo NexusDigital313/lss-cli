@@ -67,7 +67,18 @@ def _module_blacklisted(mod: str) -> bool:
 
 def _module_is_disabled(mod: str) -> bool:
     """Check if a kernel module is disabled via modprobe install-nulling or a
-    blacklist directive, using exact matching throughout."""
+    blacklist directive, using exact matching throughout.
+
+    A currently-loaded module is NEVER "disabled", whatever the config says.
+    A module nulled in modprobe.d but still resident (loaded before the config
+    was written, or an rmmod that failed) must report as not-disabled, or the
+    control false-passes on a module that is live in the running kernel. The
+    loaded check is therefore decisive and must run first.
+    """
+    # A currently-loaded module is not disabled, whatever the config says.
+    if _module_is_loaded(mod):
+        return False
+
     try:
         result = subprocess.run(
             ["modprobe", "-n", "--show-depends", mod],
@@ -80,10 +91,6 @@ def _module_is_disabled(mod: str) -> bool:
                 return True
     except FileNotFoundError:
         pass
-
-    # A currently-loaded module is not disabled, whatever the config says.
-    if _module_is_loaded(mod):
-        return False
 
     return _module_blacklisted(mod)
 

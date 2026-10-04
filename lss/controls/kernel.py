@@ -247,6 +247,12 @@ def _module_blacklisted(mod: str) -> bool:
 
 
 def _module_is_disabled(mod: str) -> bool:
+    # A currently-loaded module is NEVER disabled, whatever the config says —
+    # a module nulled in modprobe.d but still resident (held by a running
+    # service, or an rmmod that failed) must report as not-disabled, or the
+    # control false-passes on a module live in the kernel. Loaded check first.
+    if _module_is_loaded(mod):
+        return False
     try:
         r = subprocess.run(["modprobe", "-n", "--show-depends", mod], capture_output=True, text=True)
         for line in r.stdout.splitlines():
@@ -255,8 +261,6 @@ def _module_is_disabled(mod: str) -> bool:
                 return True
     except FileNotFoundError:
         pass
-    if _module_is_loaded(mod):
-        return False
     return _module_blacklisted(mod)
 
 

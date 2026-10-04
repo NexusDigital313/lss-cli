@@ -181,21 +181,75 @@ register(Control(
 
 # ---- CIS 1.1.15: Ensure USB storage is disabled ----
 
+def _usb_storage_loaded() -> bool:
+    """True if the usb-storage module is currently resident in the kernel."""
+    try:
+        r = subprocess.run(["lsmod"], capture_output=True, text=True)
+    except FileNotFoundError:
+        return False
+    for line in r.stdout.splitlines()[1:]:  # skip the "Module ..." header
+        parts = line.split()
+        if parts and parts[0] == "usb-storage":
+            return True
+    return False
+
+
+def _usb_storage_blacklisted() -> bool:
+    """True if an UNCOMMENTED modprobe.d directive disables exactly usb-storage.
+
+    Reads the files directly and token-matches, so a commented example line
+    (e.g. `# blacklist usb-storage` in a distro template) does NOT count and a
+    `blacklist usb-storageXYZ` never satisfies it — the old `grep -r` matched
+    both of those and false-passed."""
+    d = Path("/etc/modprobe.d")
+    if not d.is_dir():
+        return False
+    for conf in d.glob("*"):
+        try:
+            text = conf.read_text()
+        except OSError:
+            continue
+        for line in text.splitlines():
+            s = line.strip()
+            if not s or s.startswith("#"):
+                continue
+            toks = s.split()
+            if len(toks) >= 2 and toks[0] == "blacklist" and toks[1] == "usb-storage":
+                return True
+            if (len(toks) >= 3 and toks[0] == "install" and toks[1] == "usb-storage"
+                    and toks[2] in ("/bin/true", "/bin/false")):
+                return True
+    return False
+
+
 def _check_usb_storage() -> CheckResult:
+    # A currently-loaded module is NOT disabled, whatever the config says —
+    # report that first and decisively, or a nulled-but-resident usb-storage
+    # false-passes while the module is live in the running kernel.
+    if _usb_storage_loaded():
+        return CheckResult(
+            "manual",
+            "usb-storage is loaded now — it is not disabled regardless of "
+            "modprobe.d config. Unload and blacklist by hand. DO NOT do this on "
+            "a USB-booted host (e.g. Kali Live) — it can strand the running "
+            "filesystem and leave the box unbootable.",
+        )
+
+    # Not loaded: a modprobe install-null or an uncommented blacklist directive
+    # keeps it from loading, so the control is satisfied.
     try:
         r = subprocess.run(["modprobe", "-n", "--show-depends", "usb-storage"],
                            capture_output=True, text=True)
-        if "/bin/true" in r.stdout or "/bin/false" in r.stdout:
-            return CheckResult("pass")
+        for line in r.stdout.splitlines():
+            toks = line.split()
+            if len(toks) >= 2 and toks[0] == "install" and toks[1] in ("/bin/true", "/bin/false"):
+                return CheckResult("pass")
     except FileNotFoundError:
         pass
-    try:
-        r2 = subprocess.run(["grep", "-r", "blacklist usb-storage", "/etc/modprobe.d/"],
-                            capture_output=True, text=True)
-        if r2.returncode == 0 and r2.stdout.strip():
-            return CheckResult("pass")
-    except FileNotFoundError:
-        pass
+
+    if _usb_storage_blacklisted():
+        return CheckResult("pass")
+
     return CheckResult(
         "manual",
         "usb-storage not disabled — blacklist by hand "
