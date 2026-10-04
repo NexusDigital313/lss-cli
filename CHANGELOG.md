@@ -16,7 +16,8 @@ False-pass sweep across the control set: checks that reported a control as compl
 - **A loaded kernel module is never "disabled".** A module nulled in modprobe.d but still resident now fails its control instead of passing on the config alone.
 - **Package checks read the install status.** 4.1.1.1 passed on a removed-but-not-purged auditd (`dpkg-query -W` exits 0 for `deinstall ok config-files`). The 4.2.2.1 rsyslog, 1.3.1 AIDE and 1.6.1 AppArmor checks had a status guard that could never match; all now query `${Status}`.
 - **Audit-rule controls match the rule's key.** 4.1.3–4.1.15 accepted any loaded rule containing the key word anywhere — 4.1.14's `-S delete_module` alone satisfied 4.1.11 (`delete`). The persisted-rule scan also ignores commented-out rules.
-- **ip6tables ESTABLISHED check requires a real `-A INPUT … ACCEPT` rule**, matching the IPv4 check, instead of the word appearing anywhere in the ruleset.
+- **Firewall rule checks only count real rules on chains INPUT reaches.** The ESTABLISHED checks (3.5.2.3, 3.5.3.3) and ip6tables loopback (3.5.3.2) passed on a jump to a custom chain such as `-j ACCEPT_LOG`, or on a chain INPUT never reaches. They now require an exact `-j ACCEPT` on an INPUT-reachable chain, which also stops them failing ufw hosts. 3.5.2.4 counted an outbound `--dport 22` rule as covering a listening sshd.
+- **Wireless detection covers every interface name.** 3.6 recognised wireless only by `wlan` / `wlp` in the name, so an up USB Wi-Fi adapter (`wlx…`) or an onboard `wlo*` / `wls*` passed. It now identifies 802.11 devices through sysfs, as the CIS audit does. A failed `ip link show` no longer passes 3.6 or 3.5.5.
 
 ## [1.0.2] — 2026-07-02
 

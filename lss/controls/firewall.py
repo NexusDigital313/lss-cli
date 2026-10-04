@@ -228,6 +228,36 @@ def _input_reachable_chains(rules: str) -> set[str]:
     return reachable
 
 
+def _accepts_established(rules: str) -> bool:
+    """True if a chain reachable from INPUT ACCEPTs ESTABLISHED connections.
+
+    Token matches throughout: the state list after `--ctstate` / `--state`
+    must name ESTABLISHED (and not be negated with `!`), and the rule must jump
+    to exactly ACCEPT. The old line test — `startswith("-A INPUT")` plus
+    "ESTABLISHED" and "ACCEPT" anywhere — passed on a jump to a custom chain
+    such as `-j ACCEPT_LOG` and on any chain whose name merely starts with
+    INPUT, while failing the ufw layout, where the rule lives in
+    ufw-before-input and INPUT jumps to it.
+    """
+    reachable = _input_reachable_chains(rules)
+    for line in rules.splitlines():
+        toks = line.split()
+        if len(toks) < 2 or toks[0] != "-A" or toks[1] not in reachable:
+            continue
+        states: list[str] = []
+        for flag in ("--ctstate", "--state"):
+            if flag in toks:
+                i = toks.index(flag)
+                if i + 1 < len(toks) and toks[i - 1] != "!":
+                    states.extend(toks[i + 1].split(","))
+        if "ESTABLISHED" not in states or "-j" not in toks:
+            continue
+        i = toks.index("-j")
+        if i + 1 < len(toks) and toks[i + 1] == "ACCEPT":
+            return True
+    return False
+
+
 def _check_iptables_loopback() -> CheckResult:
     if not _cmd_exists("iptables"):
         return CheckResult("warn", "iptables not available")
@@ -284,13 +314,11 @@ register(Control(
 def _check_iptables_established() -> CheckResult:
     if not _cmd_exists("iptables"):
         return CheckResult("warn", "iptables not available")
-    rules = _iptables_rules()
-    # Require an actual INPUT ACCEPT rule for ESTABLISHED traffic, not merely
-    # the word "ESTABLISHED" appearing anywhere (e.g. in a LOG rule or a
-    # comment, or on an unrelated chain).
-    for line in rules.splitlines():
-        if line.startswith("-A INPUT") and "ESTABLISHED" in line and "ACCEPT" in line:
-            return CheckResult("pass")
+    # An ACCEPT rule for ESTABLISHED traffic on a chain reachable from INPUT,
+    # not merely the word "ESTABLISHED" appearing anywhere (e.g. in a LOG rule
+    # or a comment, or on an unrelated chain). See _accepts_established.
+    if _accepts_established(_iptables_rules()):
+        return CheckResult("pass")
     return CheckResult("fail", "no INPUT ACCEPT rule for ESTABLISHED connections found")
 
 
@@ -341,7 +369,17 @@ def _check_iptables_open_ports() -> CheckResult:
             port = addr_port.rsplit(":", 1)[-1]
             listeners.add(port)
 
-    rules = _iptables_rules()
+    # Only rules on chains reachable from INPUT govern inbound traffic. An
+    # outbound rule such as `-A OUTPUT -p tcp --dport 22 -j ACCEPT` (for
+    # ssh-ing out) used to mark a listening sshd as covered.
+    all_rules = _iptables_rules()
+    reachable = _input_reachable_chains(all_rules)
+    inbound = []
+    for line in all_rules.splitlines():
+        toks = line.split()
+        if len(toks) >= 2 and toks[0] == "-A" and toks[1] in reachable:
+            inbound.append(line)
+    rules = "\n".join(inbound)
     uncovered = []
     for port in sorted(listeners):
         if not port.isdigit():
@@ -436,8 +474,14 @@ def _check_ip6tables_loopback() -> CheckResult:
     if _ipv6_disabled():
         return CheckResult("pass", "IPv6 is disabled")
     rules = _ip6tables_rules()
-    if "-A INPUT -i lo -j ACCEPT" in rules:
-        return CheckResult("pass")
+    # Mirror the IPv4 sibling: a whole-line `-i lo -j ACCEPT` rule on a chain
+    # reachable from INPUT. The old substring test also matched the prefix of
+    # a jump to a custom chain (`-j ACCEPT_LOG`) and missed a loopback rule in
+    # a chain INPUT jumps to (the ufw layout).
+    reachable = _input_reachable_chains(rules)
+    for m in re.finditer(r"^-A (\S+) -i lo -j ACCEPT\s*$", rules, re.MULTILINE):
+        if m.group(1) in reachable:
+            return CheckResult("pass")
     return CheckResult("fail", "ip6tables loopback INPUT ACCEPT not found")
 
 
@@ -488,13 +532,9 @@ def _check_ip6tables_established() -> CheckResult:
         return CheckResult("warn", "ip6tables not available")
     if _ipv6_disabled():
         return CheckResult("pass", "IPv6 is disabled")
-    rules = _ip6tables_rules()
-    # Require an actual INPUT ACCEPT rule for ESTABLISHED traffic, not merely
-    # the word "ESTABLISHED" appearing anywhere (e.g. in a LOG rule, a comment,
-    # or on a FORWARD chain). Mirrors the IPv4 sibling's anchoring.
-    for line in rules.splitlines():
-        if line.startswith("-A INPUT") and "ESTABLISHED" in line and "ACCEPT" in line:
-            return CheckResult("pass")
+    # Same test as the IPv4 sibling: see _accepts_established.
+    if _accepts_established(_ip6tables_rules()):
+        return CheckResult("pass")
     return CheckResult("fail", "no INPUT ACCEPT rule for ESTABLISHED connections found")
 
 
@@ -599,6 +639,10 @@ def _check_unused_interfaces() -> CheckResult:
         r = subprocess.run(["ip", "-o", "link", "show", "up"], capture_output=True, text=True)
     except FileNotFoundError:
         return CheckResult("warn", "cannot enumerate interfaces (ip not available)")
+    # A failed `ip` prints nothing, which used to read as "0 interface(s) up"
+    # and pass.
+    if r.returncode != 0:
+        return CheckResult("warn", "cannot enumerate interfaces (ip link show failed)")
     up_interfaces = []
     for line in r.stdout.splitlines():
         parts = line.split(":")
@@ -623,19 +667,49 @@ register(Control(
 
 # ---- CIS 3.6: Ensure wireless interfaces are disabled ----
 
+_SYS_CLASS_NET = "/sys/class/net"
+
+# `N: name[@parent]: <FLAG,FLAG,...> ...` — one header line per interface in
+# `ip link show`; continuation lines (link/ether, altname) are indented.
+_IP_LINK_HEADER = re.compile(r"^\d+:\s+([^:@\s]+)(?:@\S+)?:\s+<([^>]*)>")
+
+
+def _is_wireless_iface(name: str) -> bool:
+    """True if `name` is an 802.11 interface, whatever it is called.
+
+    sysfs is authoritative when present: every 802.11 device exposes a
+    `phy80211` (or legacy `wireless`) entry — the test CIS's own audit uses.
+    Without sysfs, fall back to the name: systemd names every WLAN interface
+    `wl*` (wlp, wlo, wls, and wlx — the default for USB adapters) and the
+    legacy kernel name is wlan*. The old `"wlan" in line or "wlp" in line`
+    test missed wlx/wlo/wls, so an up USB Wi-Fi adapter passed this control.
+    """
+    base = Path(_SYS_CLASS_NET) / name
+    try:
+        if base.exists():
+            return (base / "phy80211").exists() or (base / "wireless").exists()
+    except OSError:
+        pass
+    return name.startswith("wl")
+
+
 def _check_wireless_disabled() -> CheckResult:
     try:
         r = subprocess.run(["ip", "link", "show"], capture_output=True, text=True)
     except FileNotFoundError:
         return CheckResult("warn", "cannot enumerate interfaces (ip not available)")
+    # A failed `ip link show` prints nothing, which used to read as "no
+    # wireless interfaces" and pass.
+    if r.returncode != 0:
+        return CheckResult("warn", "cannot enumerate interfaces (ip link show failed)")
     wireless = []
     for line in r.stdout.splitlines():
-        if "wlan" in line or "wlp" in line:
-            parts = line.split(":")
-            if len(parts) >= 2:
-                name = parts[1].strip()
-                if "UP" in line:
-                    wireless.append(name)
+        m = _IP_LINK_HEADER.match(line)
+        if not m:
+            continue
+        name, flags = m.group(1), m.group(2).split(",")
+        if "UP" in flags and _is_wireless_iface(name):
+            wireless.append(name)
     if not wireless:
         return CheckResult("pass")
     return CheckResult("warn", f"wireless interfaces up: {', '.join(wireless)}")
