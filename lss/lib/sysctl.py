@@ -21,6 +21,41 @@ from lss.lib.registry import RollbackEntry
 # A 99-zzz- name sorts after 99-sysctl.conf ('z' > 's'), so LSS wins.
 SYSCTL_CONF = "/etc/sysctl.d/99-zzz-lss.conf"
 
+# Root of the kernel's network sysctl tree; a module constant so tests can
+# redirect it.
+PROC_SYS_NET = "/proc/sys/net"
+
+
+def ipv6_disabled() -> bool:
+    """True only if IPv6 is off everywhere it could carry traffic.
+
+    `net.ipv6.conf.all.disable_ipv6 = 1` alone is not enough. It is applied to
+    the interfaces that exist when it is written, but one interface can be
+    re-enabled afterwards (NetworkManager sets disable_ipv6 = 0 on an
+    interface whose ipv6.method is auto), and `default` governs interfaces
+    created later. So every entry under /proc/sys/net/ipv6/conf — all,
+    default and each interface — must be 1. Booting with ipv6.disable=1
+    removes /proc/sys/net/ipv6 entirely, which also counts as disabled.
+
+    Never assumes disabled: no readable Linux /proc/sys/net, or any read
+    error, returns False, so a check that skips its IPv6 rules when this is
+    True cannot pass on state it could not see.
+    """
+    net = Path(PROC_SYS_NET)
+    try:
+        if not net.is_dir():
+            return False
+        ipv6 = net / "ipv6"
+        if not ipv6.exists():
+            return True
+        values = [
+            (entry / "disable_ipv6").read_text().strip()
+            for entry in (ipv6 / "conf").iterdir()
+        ]
+    except OSError:
+        return False
+    return bool(values) and all(v == "1" for v in values)
+
 
 def get_sysctl(key: str) -> str | None:
     """Read a sysctl value. Returns None if the key doesn't exist."""
