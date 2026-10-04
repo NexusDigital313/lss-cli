@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 import os
+import re
 import subprocess
 from pathlib import Path
 
@@ -291,7 +292,10 @@ def _check_aide_installed() -> CheckResult:
     except FileNotFoundError:
         pass
     try:
-        r2 = subprocess.run(["dpkg-query", "-W", "aide"], capture_output=True, text=True)
+        # -f=${Status} is required: plain `dpkg-query -W` prints only name and
+        # version, so the "install ok installed" guard below could never match.
+        r2 = subprocess.run(["dpkg-query", "-W", "-f=${Status}", "aide"],
+                            capture_output=True, text=True)
         if r2.returncode == 0 and "install ok installed" in r2.stdout:
             return CheckResult("pass")
     except FileNotFoundError:
@@ -317,15 +321,52 @@ register(Control(
 
 # ---- CIS 1.3.2: Ensure filesystem integrity is regularly checked ----
 
+# Cron locations scanned for a scheduled AIDE run — the same targets the old
+# `grep -r` searched.
+_AIDE_CRON_PATHS = ("/etc/crontab", "/etc/cron.daily", "/etc/cron.weekly")
+
+
+def _text_runs_aide(text: str) -> bool:
+    """True iff an UNCOMMENTED line names `aide` as a whole word.
+
+    The old `grep -r aide` matched commented lines (`# run aide nightly`) and
+    substrings of other words (`maidenhead`, `unaided`), so a cron file that
+    never runs AIDE false-passed."""
+    for line in text.splitlines():
+        s = line.strip()
+        if not s or s.startswith("#"):
+            continue
+        if re.search(r"\baide\b", s):
+            return True
+    return False
+
+
+def _cron_runs_aide() -> bool:
+    """True if a file in _AIDE_CRON_PATHS (the file itself, or each regular file
+    directly inside a directory) has an uncommented line that runs aide.
+
+    Unreadable, root-only, or non-UTF-8 files are skipped rather than allowed
+    to crash the audit — a file we can't read can't prove AIDE is scheduled."""
+    for target in _AIDE_CRON_PATHS:
+        p = Path(target)
+        try:
+            files = sorted(f for f in p.iterdir() if f.is_file()) if p.is_dir() else [p]
+        except OSError:
+            continue
+        for f in files:
+            try:
+                text = f.read_text(errors="replace")
+            except OSError:
+                continue
+            if _text_runs_aide(text):
+                return True
+    return False
+
+
 def _check_aide_cron() -> CheckResult:
     # Check for AIDE in crontab or systemd timers
-    try:
-        r = subprocess.run(["grep", "-r", "aide", "/etc/cron.daily/", "/etc/cron.weekly/",
-                            "/etc/crontab"], capture_output=True, text=True)
-        if r.returncode == 0 and r.stdout.strip():
-            return CheckResult("pass")
-    except FileNotFoundError:
-        pass
+    if _cron_runs_aide():
+        return CheckResult("pass")
     try:
         r2 = subprocess.run(["systemctl", "is-enabled", "aidecheck.timer"],
                             capture_output=True, text=True)
@@ -384,7 +425,10 @@ def _check_apparmor_installed() -> CheckResult:
     except FileNotFoundError:
         pass
     try:
-        r2 = subprocess.run(["dpkg-query", "-W", "apparmor"], capture_output=True, text=True)
+        # -f=${Status} is required: plain `dpkg-query -W` prints only name and
+        # version, so the "install ok installed" guard below could never match.
+        r2 = subprocess.run(["dpkg-query", "-W", "-f=${Status}", "apparmor"],
+                            capture_output=True, text=True)
         if r2.returncode == 0 and "install ok installed" in r2.stdout:
             return CheckResult("pass")
     except FileNotFoundError:
@@ -475,11 +519,23 @@ register(Control(
 
 # ---- CIS 1.2.1: Ensure package manager repositories are configured ----
 
+def _has_uncommented_line(text: str) -> bool:
+    """True iff `text` has at least one non-blank, non-comment line."""
+    for line in text.splitlines():
+        s = line.strip()
+        if s and not s.startswith("#"):
+            return True
+    return False
+
+
 def _check_repos() -> CheckResult:
     sources = Path("/etc/apt/sources.list")
     sources_d = Path("/etc/apt/sources.list.d")
+    # Require a real (uncommented) entry. The old `.strip()` test passed on a
+    # comment-only sources.list — e.g. Ubuntu's "# Ubuntu sources have moved to
+    # /etc/apt/sources.list.d/ubuntu.sources" stub — that configures no repo.
     try:
-        if sources.exists() and sources.read_text().strip():
+        if sources.exists() and _has_uncommented_line(sources.read_text(errors="replace")):
             return CheckResult("pass")
     except OSError:
         pass
@@ -503,19 +559,46 @@ register(Control(
 
 # ---- CIS 1.2.2: Ensure GPG keys are configured ----
 
+def _sources_have_signed_by(dirpath: Path) -> bool:
+    """True iff an apt source file directly in `dirpath` has an UNCOMMENTED line
+    carrying a signed-by option, matched case-insensitively.
+
+    One-line `.list` entries use `deb [signed-by=/path/key.gpg] ...`; deb822
+    `.sources` files use a `Signed-By:` field. The old case-sensitive
+    `grep -r signed-by` missed the deb822 form and matched commented example
+    lines (`# deb [signed-by=...] ...`), a false pass. Only `*.list` and
+    `*.sources` are read, because apt ignores every other file there (e.g.
+    `*.list.save` / `*.distUpgrade` left by release upgrades). Unreadable or
+    non-UTF-8 files are skipped rather than allowed to crash the audit."""
+    try:
+        files = sorted(
+            f for f in dirpath.iterdir()
+            if f.is_file() and f.suffix in (".list", ".sources")
+        )
+    except OSError:
+        return False
+    for f in files:
+        try:
+            text = f.read_text(errors="replace")
+        except OSError:
+            continue
+        for line in text.splitlines():
+            s = line.strip()
+            if not s or s.startswith("#"):
+                continue
+            if "signed-by" in s.lower():
+                return True
+    return False
+
+
 def _check_gpg_keys() -> CheckResult:
     # Modern apt uses trusted.gpg.d or signed-by in sources
     gpg_d = Path("/etc/apt/trusted.gpg.d")
     if gpg_d.exists() and (list(gpg_d.glob("*.gpg")) + list(gpg_d.glob("*.asc"))):
         return CheckResult("pass")
     # Signed-by in sources
-    try:
-        r = subprocess.run(["grep", "-r", "signed-by", "/etc/apt/sources.list.d/"],
-                           capture_output=True, text=True)
-        if r.returncode == 0 and r.stdout.strip():
-            return CheckResult("pass")
-    except FileNotFoundError:
-        pass
+    if _sources_have_signed_by(Path("/etc/apt/sources.list.d")):
+        return CheckResult("pass")
     # Legacy trusted.gpg
     if Path("/etc/apt/trusted.gpg").exists():
         return CheckResult("pass")

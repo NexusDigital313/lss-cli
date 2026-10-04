@@ -189,6 +189,26 @@ def _chrony_conf_path() -> Path | None:
     return None
 
 
+def _has_ntp_source(text: str) -> bool:
+    """True iff chrony.conf has an UNCOMMENTED `server` or `pool` directive
+    with a value — the CIS 2.1.2 audit's `^\\h*(server|pool)\\h+[^#\\n\\r]+`.
+
+    The old `"server" in text or "pool" in text` substring test false-passed
+    on commented examples like `# pool 2.debian.pool.ntp.org iburst`, which
+    are ubiquitous in shipped chrony.conf, and on any prose comment mentioning
+    a server — reporting a time source configured when chrony had none.
+    Matching the first token exactly also rejects chrony's other comment
+    leaders (`!`, `;`, `%`)."""
+    for line in text.splitlines():
+        s = line.strip()
+        if not s or s.startswith("#"):
+            continue
+        toks = s.split()
+        if len(toks) >= 2 and toks[0] in ("server", "pool") and not toks[1].startswith("#"):
+            return True
+    return False
+
+
 def _check_chrony_config() -> CheckResult:
     # Only relevant if chrony is the active time sync
     try:
@@ -207,7 +227,7 @@ def _check_chrony_config() -> CheckResult:
         text = p.read_text()
     except OSError:
         return CheckResult("warn", f"{p} could not be read")
-    if "server" in text or "pool" in text:
+    if _has_ntp_source(text):
         return CheckResult("pass")
     return CheckResult("fail", f"no server/pool configured in {p}")
 
@@ -233,7 +253,9 @@ def _fix_chrony_config() -> list[RollbackEntry]:
     from lss.lib import journal as _j
     bkp = _j.backup_file(str(p))
     text = p.read_text()
-    if "server" in text or "pool" in text:
+    # Same predicate as the check: commented `# pool` examples must not stop
+    # the fix from appending real sources.
+    if _has_ntp_source(text):
         return []
     p.write_text(text.rstrip() + _CHRONY_DEFAULT_POOLS)
     return [RollbackEntry(

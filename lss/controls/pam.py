@@ -519,6 +519,13 @@ def _check_pw_retry() -> CheckResult:
         p = Path(pam_path)
         if p.exists():
             for line in p.read_text().splitlines():
+                # Skip blank and commented lines. A commented
+                # `# password requisite pam_pwquality.so retry=3` example
+                # enforces nothing, but the old substring test read it and
+                # passed 5.3.7.
+                s = line.strip()
+                if not s or s.startswith("#"):
+                    continue
                 if "pam_pwquality" in line:
                     m = re.search(r"retry=(\d+)", line)
                     if m and int(m.group(1)) <= 3:

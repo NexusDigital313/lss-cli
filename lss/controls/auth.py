@@ -46,6 +46,13 @@ def _get_pam_minlen() -> int | None:
             except OSError:
                 pam_lines = []
             for line in pam_lines:
+                # Skip blank and commented lines. A commented example such as
+                # `# password requisite pam_pwquality.so retry=3 minlen=14`
+                # loads nothing, but the old substring test read it as
+                # minlen=14 and passed 5.3.4 with no length policy enforced.
+                s = line.strip()
+                if not s or s.startswith("#"):
+                    continue
                 if "pam_pwquality" in line or "pam_cracklib" in line:
                     m = re.search(r"minlen=(\d+)", line)
                     if m:

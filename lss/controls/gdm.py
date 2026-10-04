@@ -65,7 +65,15 @@ def _gdm_installed() -> bool:
     # via a package — treat as not installed (mirrors the returncode != 0
     # path) rather than letting FileNotFoundError abort the whole audit.
     try:
-        r = subprocess.run(["dpkg-query", "-W", "gdm3"], capture_output=True, text=True)
+        # `-f=${Status}` is required: plain `dpkg-query -W` prints only
+        # `name<TAB>version`, so the "install ok installed" guard never
+        # matched, _gdm_installed() returned False on every Debian host that
+        # has GDM, and all eight 1.8.x checks vacuously passed as "GDM not
+        # installed". lss/lib/pkg.py is_installed already uses this format.
+        r = subprocess.run(
+            ["dpkg-query", "-W", "-f=${Status}", "gdm3"],
+            capture_output=True, text=True,
+        )
         if r.returncode == 0 and "install ok installed" in r.stdout:
             return True
     except FileNotFoundError:
@@ -75,6 +83,37 @@ def _gdm_installed() -> bool:
         return r2.returncode == 0
     except FileNotFoundError:
         return False
+
+
+def _dconf_key_is(text: str, key: str, value: str) -> bool:
+    """Return True iff a dconf keyfile line sets `key` to exactly `value`.
+
+    The match is anchored per line, so it ignores commented `# key=value`
+    lines and requires THIS key's own value — not merely the key name being
+    present and "true" appearing anywhere in the file (e.g. on another
+    key's line).
+    """
+    return re.search(
+        rf"^\s*{re.escape(key)}\s*=\s*{re.escape(value)}\s*$",
+        text,
+        re.MULTILINE,
+    ) is not None
+
+
+def _locks_file_locks(text: str, keys: tuple[str, ...]) -> bool:
+    """Return True iff an uncommented line of a dconf locks file locks one of `keys`.
+
+    dconf locks files list absolute key paths, one per line, and a lock covers
+    exactly the key it names. A commented example line locks nothing, and the
+    old `"lock"` / `"automount"` substring tests also matched unrelated keys —
+    `/org/gnome/desktop/interface/clock-format` contains "lock", and a lock on
+    `.../automount-open` alone leaves `.../automount` itself overridable.
+    """
+    for line in text.splitlines():
+        line = line.strip()
+        if line and not line.startswith("#") and line in keys:
+            return True
+    return False
 
 
 # ---- CIS 1.8.1: Ensure GNOME Display Manager is removed (server) ----
@@ -99,15 +138,28 @@ register(Control(
 def _check_gdm_banner() -> CheckResult:
     if not _gdm_installed():
         return CheckResult("pass", "GDM not installed")
-    banner_conf = Path("/etc/gdm3/greeter.dconf-defaults")
-    if not banner_conf.exists():
-        banner_conf = Path("/etc/dconf/db/gdm.d/01-banner-message")
-    if banner_conf.exists():
+    # Read both banner sources, like 1.8.3. The old code read only
+    # greeter.dconf-defaults whenever it existed — always, on Debian with
+    # gdm3 — so it never saw 01-banner-message, the file _fix_gdm_banner
+    # writes, and `lss harden` could not turn this control green. The old
+    # substring test hid that by passing on the stock file's commented
+    # `# banner-message-enable=true` example.
+    for conf_path in [
+        "/etc/dconf/db/gdm.d/01-banner-message",
+        "/etc/gdm3/greeter.dconf-defaults",
+    ]:
+        p = Path(conf_path)
+        if not p.exists():
+            continue
         try:
-            text = banner_conf.read_text()
+            text = p.read_text()
         except OSError:
-            text = ""
-        if "banner-message-enable" in text and "true" in text.lower():
+            continue
+        # The old test (key name present AND "true" anywhere in the file)
+        # false-passed on a commented `# banner-message-enable=true` example
+        # line, and on `banner-message-enable=false` whenever any other key
+        # in the file was true (e.g. disable-user-list=true).
+        if _dconf_key_is(text, "banner-message-enable", "true"):
             return CheckResult("pass")
     return CheckResult("fail", "GDM login banner not configured")
 
@@ -150,7 +202,11 @@ def _check_gdm_user_list() -> CheckResult:
                 text = p.read_text()
             except OSError:
                 continue
-            if "disable-user-list" in text and "true" in text.lower():
+            # The old test (key name present AND "true" anywhere in the file)
+            # false-passed on a commented `# disable-user-list=true` example
+            # line, and on `disable-user-list=false` whenever any other key
+            # in the file was true (e.g. banner-message-enable=true).
+            if _dconf_key_is(text, "disable-user-list", "true"):
                 return CheckResult("pass")
     return CheckResult("fail", "GDM user list not disabled")
 
@@ -193,9 +249,11 @@ def _check_gdm_screenlock() -> CheckResult:
                 text = p.read_text()
             except OSError:
                 continue
-            # Must be lock-enabled=true, not merely the presence of the key —
-            # `lock-enabled=false` would otherwise (wrongly) pass.
-            if re.search(r"lock-enabled\s*=\s*true", text):
+            # Must be an uncommented lock-enabled=true, not merely the presence
+            # of the key — `lock-enabled=false` would otherwise (wrongly) pass.
+            # The previous unanchored regex also matched a commented
+            # `# lock-enabled=true` line, another false pass.
+            if _dconf_key_is(text, "lock-enabled", "true"):
                 return CheckResult("pass")
     return CheckResult("warn", "GDM screen lock not explicitly configured")
 
@@ -240,7 +298,17 @@ def _check_gdm_lock_override() -> CheckResult:
                 text = f.read_text()
             except OSError:
                 continue
-            if "screensaver" in text.lower() or "lock" in text.lower():
+            # Require a real (uncommented) lock on a key that governs the idle
+            # screen lock: lock-enabled / lock-delay (what `lss harden` locks)
+            # or CIS's session idle-delay. The old `"screensaver" or "lock"`
+            # substring test passed on a commented example line and on any
+            # unrelated lock containing "lock" (e.g.
+            # /org/gnome/desktop/interface/clock-format).
+            if _locks_file_locks(text, (
+                "/org/gnome/desktop/screensaver/lock-enabled",
+                "/org/gnome/desktop/screensaver/lock-delay",
+                "/org/gnome/desktop/session/idle-delay",
+            )):
                 return CheckResult("pass")
     return CheckResult("warn", "GDM screen lock override protection not configured")
 
@@ -343,7 +411,12 @@ def _check_gdm_automount_lock() -> CheckResult:
                 text = f.read_text()
             except OSError:
                 continue
-            if "automount" in text.lower():
+            # Require a real (uncommented) lock on the automount key itself.
+            # The old `"automount" in text` substring test passed on a
+            # commented example line, on any comment that mentioned automount,
+            # and on a lock covering only automount-open — which leaves
+            # automount overridable.
+            if _locks_file_locks(text, ("/org/gnome/desktop/media-handling/automount",)):
                 return CheckResult("pass")
     return CheckResult("warn", "GDM automount override protection not configured")
 

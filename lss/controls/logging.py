@@ -36,11 +36,14 @@ def _check_auditd_installed() -> CheckResult:
             return CheckResult("pass")
     except FileNotFoundError:
         pass
-    # Check package
+    # Check package. Query the install Status, not just the exit code:
+    # `dpkg-query -W` exits 0 for a removed-but-not-purged package (status
+    # `deinstall ok config-files`, auditd binary gone), so the rc alone
+    # false-passed this control on a host with no auditd.
     try:
-        r2 = subprocess.run(["dpkg-query", "-W", "auditd"], capture_output=True, text=True)
+        r2 = subprocess.run(["dpkg-query", "-W", "-f=${Status}", "auditd"], capture_output=True, text=True)
         verified = True
-        if r2.returncode == 0:
+        if r2.returncode == 0 and "install ok installed" in r2.stdout:
             return CheckResult("pass")
     except FileNotFoundError:
         pass
@@ -412,7 +415,9 @@ def _check_rsyslog() -> CheckResult:
     except FileNotFoundError:
         pass
     try:
-        r2 = subprocess.run(["dpkg-query", "-W", "rsyslog"], capture_output=True, text=True)
+        # -f=${Status}: plain `dpkg-query -W` prints only name/version, so the
+        # "install ok installed" guard below could never match.
+        r2 = subprocess.run(["dpkg-query", "-W", "-f=${Status}", "rsyslog"], capture_output=True, text=True)
         verified = True
         if r2.returncode == 0 and "install ok installed" in r2.stdout:
             return CheckResult("pass")

@@ -8,6 +8,7 @@
 
 from __future__ import annotations
 
+import re
 import shlex
 import subprocess
 from pathlib import Path
@@ -21,11 +22,35 @@ from lss.lib.registry import Control, CheckResult, RollbackEntry, register
 # whole-file snapshot and silently delete another control's rules.
 LSS_AUDIT_RULES = "/etc/audit/rules.d/80-lss.rules"
 
+# Directory augenrules assembles the persistent rule set from. A module
+# constant so tests can redirect it.
+AUDIT_RULES_DIR = "/etc/audit/rules.d"
+
 
 def _rules_path_for(control_id: str) -> str:
     """Per-control audit rules file, e.g. 4.1.3 -> 80-lss-4-1-3.rules."""
     safe = control_id.replace(".", "-")
     return f"/etc/audit/rules.d/80-lss-{safe}.rules"
+
+
+def _line_has_rule(line: str, pattern: str) -> bool:
+    """True if this audit rule line carries `pattern`.
+
+    A bare key (e.g. "access") must appear as the rule's key. `auditctl -l`
+    prints a syscall rule's key as `-F key=<k>` and a watch rule's as
+    `-k <k>`, unquoted (a quoted value is tolerated); rules files may use
+    either form. The old `pattern in line` substring test let an unrelated
+    rule satisfy a control — generic keys like access/delete/actions matched
+    a watched path (`-w /etc/security/access.conf ... -k identity` passed
+    4.1.10), a syscall name (`-S delete_module` passed 4.1.11), or a longer
+    key (`unauthorized-access`, `privileged-actions`), a false pass.
+
+    Non-key patterns such as the `-e 2` immutable flag keep the plain
+    substring match.
+    """
+    if pattern and not pattern.startswith("-") and not re.search(r"\s", pattern):
+        return re.search(rf'(?:-k\s+|key=)"?{re.escape(pattern)}(?![\w-])', line) is not None
+    return pattern in line
 
 
 def _rule_is_active(pattern: str) -> bool:
@@ -34,7 +59,7 @@ def _rule_is_active(pattern: str) -> bool:
         r = subprocess.run(["auditctl", "-l"], capture_output=True, text=True)
         if r.returncode == 0:
             for line in r.stdout.splitlines():
-                if pattern in line:
+                if _line_has_rule(line, pattern):
                     return True
     except FileNotFoundError:
         pass
@@ -42,8 +67,9 @@ def _rule_is_active(pattern: str) -> bool:
 
 
 def _rule_is_persisted(pattern: str) -> bool:
-    """Check if rule exists in /etc/audit/rules.d/."""
-    rules_dir = Path("/etc/audit/rules.d")
+    """Check if rule exists in /etc/audit/rules.d/. A commented-out rule is
+    not persisted, so comment lines never count."""
+    rules_dir = Path(AUDIT_RULES_DIR)
     try:
         if not rules_dir.exists():
             return False
@@ -59,7 +85,10 @@ def _rule_is_persisted(pattern: str) -> bool:
             # rule is persisted, so treat it as not found here.
             continue
         for line in contents.splitlines():
-            if pattern in line:
+            s = line.strip()
+            if not s or s.startswith("#"):
+                continue
+            if _line_has_rule(s, pattern):
                 return True
     return False
 
