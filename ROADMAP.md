@@ -64,4 +64,10 @@ Every item above has tests that fail on the pre-fix code (tests/test_false_pass_
 
 **Needs a live-host pass before a release tag:** the faillock profile (lockout tested only in a debian:12 container with pamtester), `sshd -T -C` on older OpenSSH, `modprobe --showconfig` and the mount scan on real hosts, the GNOME dconf profile after `lss harden`, iptables-persistent install on Debian, and the aa-status format on AppArmor 4.
 
-**Not yet audited in round 2:** logging.py, audit_rules.py, the rest of extras.py, services.py, the rest of network.py, boot.py.
+## False-pass sweep — round 3 (done on `claude/false-pass-fixes`, 2026-10-05)
+
+The modules round 2 did not audit: logging.py, audit_rules.py, extras.py, services.py, network.py, boot.py. 25 findings were fixed, each pinned in tests/test_false_pass_r3_*.py and failing on the pre-fix code. Every control module has now had a false-pass pass.
+
+**Needs a live-host pass as well:** journald drop-in order against `systemd-analyze cat-config`, the `auditctl -l` rule rendering and `ausyscall` unknown-syscall handling (aarch64), the RHEL `audit` package install, GRUB user.cfg on RHEL, and the socket-activated service units.
+
+**Known false fail, not fixed:** 4.1.16 (`-e 2`) never passes at runtime, because `auditctl -l` does not print the enable flag. It needs `auditctl -s`.
