@@ -182,95 +182,29 @@ register(Control(
 
 # ---- CIS 1.1.15: Ensure USB storage is disabled ----
 
-def _usb_storage_loaded() -> bool:
-    """True if the usb-storage module is currently resident in the kernel."""
-    try:
-        r = subprocess.run(["lsmod"], capture_output=True, text=True)
-    except FileNotFoundError:
-        return False
-    for line in r.stdout.splitlines()[1:]:  # skip the "Module ..." header
-        parts = line.split()
-        if parts and parts[0] == "usb-storage":
-            return True
-    return False
-
-
-def _usb_storage_blacklisted() -> bool:
-    """True if an UNCOMMENTED modprobe.d directive disables exactly usb-storage.
-
-    Reads the files directly and token-matches, so a commented example line
-    (e.g. `# blacklist usb-storage` in a distro template) does NOT count and a
-    `blacklist usb-storageXYZ` never satisfies it — the old `grep -r` matched
-    both of those and false-passed."""
-    d = Path("/etc/modprobe.d")
-    if not d.is_dir():
-        return False
-    for conf in d.glob("*"):
-        try:
-            text = conf.read_text()
-        except OSError:
-            continue
-        for line in text.splitlines():
-            s = line.strip()
-            if not s or s.startswith("#"):
-                continue
-            toks = s.split()
-            if len(toks) >= 2 and toks[0] == "blacklist" and toks[1] == "usb-storage":
-                return True
-            if (len(toks) >= 3 and toks[0] == "install" and toks[1] == "usb-storage"
-                    and toks[2] in ("/bin/true", "/bin/false")):
-                return True
-    return False
-
-
 def _check_usb_storage() -> CheckResult:
-    # A currently-loaded module is NOT disabled, whatever the config says —
-    # report that first and decisively, or a nulled-but-resident usb-storage
-    # false-passes while the module is live in the running kernel.
-    if _usb_storage_loaded():
-        return CheckResult(
-            "manual",
-            "usb-storage is loaded now — it is not disabled regardless of "
-            "modprobe.d config. Unload and blacklist by hand. DO NOT do this on "
-            "a USB-booted host (e.g. Kali Live) — it can strand the running "
-            "filesystem and leave the box unbootable.",
-        )
-
-    # Not loaded: a modprobe install-null or an uncommented blacklist directive
-    # keeps it from loading, so the control is satisfied.
-    try:
-        r = subprocess.run(["modprobe", "-n", "--show-depends", "usb-storage"],
-                           capture_output=True, text=True)
-        for line in r.stdout.splitlines():
-            toks = line.split()
-            if len(toks) >= 2 and toks[0] == "install" and toks[1] in ("/bin/true", "/bin/false"):
-                return CheckResult("pass")
-    except FileNotFoundError:
-        pass
-
-    if _usb_storage_blacklisted():
+    # Shared CIS "not available" test (lss.lib.kmod): usb-storage must be
+    # install-nulled AND blacklisted AND not loaded (lsmod prints it as
+    # usb_storage), or absent from the kernel tree. Blacklist alone only stops
+    # alias autoload, so it does not count.
+    from lss.lib import kmod
+    ok, why = kmod.module_state("usb-storage")
+    if ok is True:
         return CheckResult("pass")
-
+    if ok is None:
+        return CheckResult("warn", why)
     return CheckResult(
         "manual",
-        "usb-storage not disabled — blacklist by hand "
-        "(echo 'install usb-storage /bin/true' > /etc/modprobe.d/usb-storage.conf). "
+        f"{why}. Disable by hand (printf 'install usb-storage /bin/false\\n"
+        "blacklist usb-storage\\n' > /etc/modprobe.d/usb-storage.conf). "
         "DO NOT do this on a USB-booted host (e.g. Kali Live) — it can strand the "
         "running filesystem and leave the box unbootable.",
     )
 
 
 def _fix_usb_storage() -> list[RollbackEntry]:
-    conf = "/etc/modprobe.d/lss-usb-storage.conf"
-    bkp = journal.backup_file(conf)
-    Path(conf).write_text("install usb-storage /bin/true\nblacklist usb-storage\n")
-    subprocess.run(["rmmod", "usb-storage"], capture_output=True)
-    return [RollbackEntry(
-        action="disabled usb-storage module",
-        path=conf,
-        backup=bkp,
-        undo=[] if bkp else [["rm", "-f", conf]],
-    )]
+    from lss.lib import kmod
+    return kmod.disable_module("usb-storage")
 
 
 register(Control(

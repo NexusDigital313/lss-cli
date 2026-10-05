@@ -120,26 +120,24 @@ for _id, _title, _path, _mode, _uid, _gid in _FILE_PERMS:
 # ---- CIS 6.1.13: Ensure SUID/SGID files are reviewed ----
 
 def _check_suid_sgid() -> CheckResult:
-    """Audit-only: report count of SUID/SGID binaries."""
-    import subprocess
+    """Audit-only: report count of SUID/SGID binaries on every local mount.
+
+    `find / -xdev` alone never looked at a separate /home, /var or /tmp, so
+    a SUID binary there was invisible. An incomplete scan never passes."""
+    from lss.lib import fsscan
     try:
-        r = subprocess.run(
-            ["find", "/", "-xdev", "(", "-perm", "-4000", "-o", "-perm", "-2000", ")",
-             "-type", "f",
-             "-not", "-path", "/proc/*", "-not", "-path", "/sys/*"],
-            capture_output=True, text=True, timeout=120,
-        )
-        files = [f for f in r.stdout.strip().splitlines() if f]
-        count = len(files)
-        if count <= 30:
-            return CheckResult("pass", f"{count} SUID/SGID binaries found")
-        return CheckResult("warn", f"{count} SUID/SGID binaries — review recommended")
-    except subprocess.TimeoutExpired:
-        return CheckResult("warn", "scan timed out")
+        files, note = fsscan.find_all(
+            ["(", "-perm", "-4000", "-o", "-perm", "-2000", ")", "-type", "f"])
     except FileNotFoundError:
         return CheckResult("warn", "find not available — cannot scan for SUID/SGID files")
     except OSError as e:
         return CheckResult("warn", f"SUID/SGID scan failed: {e}")
+    count = len(files)
+    if note:
+        return CheckResult("warn", f"{count} SUID/SGID binaries found ({note})")
+    if count <= 30:
+        return CheckResult("pass", f"{count} SUID/SGID binaries found")
+    return CheckResult("warn", f"{count} SUID/SGID binaries — review recommended")
 
 
 register(Control(
