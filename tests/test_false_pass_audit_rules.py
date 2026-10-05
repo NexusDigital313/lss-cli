@@ -123,9 +123,11 @@ def test_rule_is_persisted_uses_key_matching(tmp_path, monkeypatch):
 @pytest.mark.parametrize("cid", _CONTROL_IDS)
 def test_shipped_rules_satisfy_their_control(tmp_path, monkeypatch, cid, render):
     """Each control's own rules, loaded, must still pass in either key form —
-    the stricter match must not false-FAIL a compliant host."""
+    the stricter match must not false-FAIL a compliant host. CIS also needs
+    them persisted (round 3), so the rules file carries them too."""
     _fake_auditctl(monkeypatch, "\n".join(render(r) for r in _RULES_BY_ID[cid]) + "\n")
     monkeypatch.setattr(audit_rules, "AUDIT_RULES_DIR", str(tmp_path))
+    (tmp_path / "80-lss-test.rules").write_text("\n".join(_RULES_BY_ID[cid]) + "\n")
     assert get_control(cid).check().status == "pass"
 
 
