@@ -8,6 +8,7 @@
 
 from __future__ import annotations
 
+import os
 import re
 import shlex
 import subprocess
@@ -93,6 +94,186 @@ def _rule_is_persisted(pattern: str) -> bool:
     return False
 
 
+def _loaded_rule_lines() -> list[str] | None:
+    """`auditctl -l` output lines, or None when the loaded rules can't be read."""
+    try:
+        r = subprocess.run(["auditctl", "-l"], capture_output=True, text=True)
+    except (FileNotFoundError, OSError):
+        return None
+    if r.returncode != 0:
+        return None
+    return r.stdout.splitlines()
+
+
+def _persisted_rule_lines() -> list[str]:
+    """Every line augenrules would read from rules.d/*.rules. Unreadable files
+    contribute nothing, so they can never prove a rule is persisted."""
+    lines: list[str] = []
+    try:
+        files = sorted(Path(AUDIT_RULES_DIR).glob("*.rules"))
+    except OSError:
+        return lines
+    for f in files:
+        try:
+            lines.extend(f.read_text().splitlines())
+        except OSError:
+            continue
+    return lines
+
+
+# `-F arch=` spellings auditctl accepts, folded to b64/b32.
+_ARCH_ALIASES = {
+    "x86_64": "b64", "aarch64": "b64", "ppc64": "b64", "ppc64le": "b64", "s390x": "b64",
+    "i386": "b32", "i686": "b32", "arm": "b32", "armeb": "b32", "ppc": "b32", "s390": "b32",
+}
+_B32_COMPAT = {"x86_64": "i386", "aarch64": "arm", "ppc64": "ppc", "ppc64le": "ppc", "s390x": "s390"}
+
+
+def _machine() -> str:
+    return os.uname().machine
+
+
+def _parse_rule(line: str) -> dict | None:
+    """Parse an audit rule line (rules-file or `auditctl -l` form) into what it
+    collects. Returns None for comments, control lines (-D, -b, -e ...) and
+    rules that do not record exit events (`-a never,exit`, other lists)."""
+    s = line.strip()
+    if not s or s.startswith("#"):
+        return None
+    try:
+        toks = shlex.split(s)
+    except ValueError:
+        toks = s.split()
+    rule = {"keys": set(), "path": None, "perms": None, "arch": None,
+            "syscalls": set(), "exit": None, "kind": None}
+    it = iter(toks)
+    for flag in it:
+        val = next(it, "")
+        if flag == "-w":
+            rule["kind"], rule["path"] = "watch", val
+        elif flag == "-p":
+            rule["perms"] = set(val)
+        elif flag == "-k":
+            rule["keys"].add(val)
+        elif flag in ("-a", "-A"):
+            parts = set(val.split(","))
+            if parts != {"always", "exit"}:
+                return None
+            rule["kind"] = "syscall"
+        elif flag == "-S":
+            rule["syscalls"].update(x for x in val.split(",") if x)
+        elif flag == "-F":
+            m = re.match(r"(\w+)(=|!=|>=|<=|>|<|&=|&)(.*)$", val)
+            if not m or m.group(2) != "=":
+                continue
+            name, v = m.group(1), m.group(3).strip('"')
+            if name == "key":
+                rule["keys"].add(v)
+            elif name == "arch":
+                rule["arch"] = _ARCH_ALIASES.get(v, v)
+            elif name == "exit":
+                rule["exit"] = v
+            elif name in ("path", "dir"):
+                rule["path"] = v
+            elif name == "perm":
+                rule["perms"] = set(v)
+    if rule["kind"] is None:
+        return None
+    if rule["path"] is not None:
+        p = rule["path"].rstrip("/") or "/"
+        if p.startswith("/var/run/"):
+            p = p[len("/var"):]  # /var/run is a symlink to /run
+        rule["path"] = p
+        if rule["perms"] is None:
+            rule["perms"] = set("rwxa")
+    if rule["kind"] == "syscall" and not rule["syscalls"] and rule["path"] is None:
+        rule["syscalls"] = {"all"}
+    return rule
+
+
+def _syscall_unknown(arch: str, name: str, cache: dict) -> bool:
+    """True if this kernel has no syscall `name` for `arch` (b64/b32), so a
+    rule cannot name it — e.g. `open` on aarch64, or any b64 rule on a 32-bit
+    host. Anything ausyscall can't positively call unknown stays required."""
+    if (arch, name) in cache:
+        return cache[(arch, name)]
+    m = _machine()
+    if m in _B32_COMPAT:
+        table = m if arch == "b64" else _B32_COMPAT[m]
+    elif arch == "b64":
+        cache[(arch, name)] = True  # 32-bit kernel: no b64 syscalls at all
+        return True
+    else:
+        table = "i386" if re.fullmatch(r"i[3-6]86", m) else ("arm" if m.startswith("arm") else m)
+    try:
+        r = subprocess.run(["ausyscall", table, name, "--exact"], capture_output=True, text=True)
+        unknown = r.returncode != 0 and "unknown syscall" in (r.stdout + r.stderr).lower()
+    except (FileNotFoundError, OSError):
+        unknown = False
+    cache[(arch, name)] = unknown
+    return unknown
+
+
+def _missing_rules(required: list[str], key: str, lines: list[str], cache: dict) -> list[str]:
+    """The required rules that `lines` do not collect under `key`.
+
+    A watch is covered by a rule on the same path with at least its
+    permissions; a syscall rule by rules of the same arch (and exit filter)
+    that together name every syscall this kernel has. Extra filters such as
+    auid are not compared.
+    """
+    have = [r for r in map(_parse_rule, lines) if r and key in r["keys"]]
+    if not have:
+        return list(required)
+    missing = []
+    for text in required:
+        want = _parse_rule(text)
+        if want["kind"] == "watch":
+            ok = any(h["path"] == want["path"] and want["perms"] <= (h["perms"] or set())
+                     for h in have)
+        else:
+            named: set[str] = set()
+            for h in have:
+                if (h["kind"] == "syscall" and h["arch"] == want["arch"]
+                        and h["exit"] in (None, want["exit"])):
+                    named |= h["syscalls"]
+            ok = "all" in named or all(
+                s in named or _syscall_unknown(want["arch"], s, cache)
+                for s in want["syscalls"])
+        if not ok:
+            missing.append(text)
+    return missing
+
+
+def _summarize(rules: list[str]) -> str:
+    shown = "; ".join(rules[:3])
+    return shown + (f"; +{len(rules) - 3} more" if len(rules) > 3 else "")
+
+
+def _check_rule_set(key: str, required: list[str]) -> CheckResult:
+    """CIS checks both the on-disk (rules.d) and the running (`auditctl -l`)
+    configuration, and every rule of the control in each."""
+    cache: dict = {}
+    loaded = _loaded_rule_lines()
+    loaded_missing = _missing_rules(required, key, loaded or [], cache)
+    persisted_missing = _missing_rules(required, key, _persisted_rule_lines(), cache)
+    if not loaded_missing and not persisted_missing:
+        return CheckResult("pass")
+    if not persisted_missing:
+        if loaded is None:
+            return CheckResult("warn", "rule persisted but loaded rules unreadable (auditctl -l failed)")
+        return CheckResult("warn", "rule persisted but not loaded — restart auditd")
+    if not loaded_missing:
+        return CheckResult(
+            "fail",
+            f"{key} rules loaded but not persisted in {AUDIT_RULES_DIR} — augenrules drops "
+            f"them when auditd restarts; missing: {_summarize(persisted_missing)}",
+        )
+    if len(persisted_missing) == len(required) and len(loaded_missing) == len(required):
+        return CheckResult("fail", f"no audit rules for {key}")
+    return CheckResult("fail", f"incomplete {key} audit rules; missing: {_summarize(persisted_missing)}")
+
+
 def _delete_argv_for(rule_argv: list[str]) -> list[str] | None:
     """Build the `auditctl -d`/`-W` argv that deletes a rule produced by
     `auditctl -a`/`-w`. Returns None if the rule shape is unrecognized.
@@ -127,7 +308,10 @@ def _add_audit_rule(rule: str, control_id: str) -> RollbackEntry:
 
     # Persist
     existing = p.read_text() if p.exists() else "# LSS audit rules\n"
-    if rule not in existing:
+    # Compare whole uncommented lines: a commented-out copy is not persisted.
+    if rule not in {ln.strip() for ln in existing.splitlines()}:
+        if not existing.endswith("\n"):
+            existing += "\n"
         p.write_text(existing + rule + "\n")
 
     delete_argv = _delete_argv_for(rule_argv)
@@ -289,13 +473,9 @@ _AUDIT_CONTROLS = [
 for _id, _title, _pattern, _rules in _AUDIT_CONTROLS:
     pattern, rules, cid = _pattern, _rules, _id
 
-    def _make_check(pat):
+    def _make_check(pat, rs):
         def check():
-            if _rule_is_active(pat):
-                return CheckResult("pass")
-            if _rule_is_persisted(pat):
-                return CheckResult("warn", "rule persisted but not loaded — restart auditd")
-            return CheckResult("fail", f"no audit rules for {pat}")
+            return _check_rule_set(pat, rs)
         return check
 
     def _make_fix(rs, cid):
@@ -307,7 +487,7 @@ for _id, _title, _pattern, _rules in _AUDIT_CONTROLS:
         id=_id,
         title=_title,
         section="logging",
-        check=_make_check(pattern),
+        check=_make_check(pattern, rules),
         fix=_make_fix(rules, cid),
     ))
 
