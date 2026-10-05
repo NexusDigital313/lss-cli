@@ -8,6 +8,7 @@
 
 from lss.lib.registry import Control, CheckResult, RollbackEntry, register
 from lss.lib.sysctl import get_sysctl as _get_sysctl, set_sysctl as _set_sysctl
+from lss.lib.sysctl import ipv6_disabled as _ipv6_disabled
 
 
 # ---- CIS 3.3.1: Ensure source routed packets are not accepted ----
@@ -301,8 +302,9 @@ _IPV6_RA_KEYS = [
 
 def _check_ipv6_ra() -> CheckResult:
     # Only relevant if IPv6 is enabled
-    v6_all = _get_sysctl("net.ipv6.conf.all.disable_ipv6")
-    if v6_all == "1":
+    # all.disable_ipv6 = 1 alone does not disable IPv6 on an interface that
+    # was re-enabled afterwards or created later; ipv6_disabled() checks them all.
+    if _ipv6_disabled():
         return CheckResult("pass", "IPv6 is disabled")
     for key in _IPV6_RA_KEYS:
         val = _get_sysctl(key)
