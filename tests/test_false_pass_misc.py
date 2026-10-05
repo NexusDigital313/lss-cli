@@ -110,6 +110,7 @@ def _cron_layout(tmp_path, daily_content: str | bytes) -> tuple[str, str, str]:
         target.write_bytes(daily_content)
     else:
         target.write_text(daily_content)
+    target.chmod(0o755)  # run-parts only runs executable files
     weekly = tmp_path / "cron.weekly"
     weekly.mkdir()
     return (str(crontab), str(daily), str(weekly))
