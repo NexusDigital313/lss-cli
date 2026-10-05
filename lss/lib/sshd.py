@@ -8,13 +8,15 @@
 
 from __future__ import annotations
 
+import glob
 import re
 import shutil
+import socket
 import subprocess
 from pathlib import Path
 
 from lss.lib import journal
-from lss.lib.registry import RollbackEntry
+from lss.lib.registry import CheckResult, RollbackEntry
 
 # Legacy shared drop-in — kept only so rollback of pre-1.0.2 journals (which
 # recorded this path) still resolves. New writes use a per-key file (see
@@ -34,24 +36,137 @@ def _conf_path_for(key: str) -> str:
     return f"{SSHD_CONFIG_D}/80-lss-{safe}.conf"
 
 
+def _sshd_dump(args: list[str]) -> str | None:
+    try:
+        r = subprocess.run(["sshd", "-T", *args], capture_output=True, text=True)
+    except (FileNotFoundError, OSError):
+        return None
+    return r.stdout if r.returncode == 0 else None
+
+
 def get_sshd_setting(key: str) -> str | None:
     """Return the effective sshd setting via `sshd -T`. None if unavailable.
 
-    `sshd -T` resolves Match blocks against the *invoking user* (root by
-    default), so the result is the value that would apply to a root login. For
-    detecting whether the global default is correct vs only the Match-scoped
-    value, see `setting_in_global_scope`.
+    Plain `sshd -T` applies no Match blocks at all, so a `Match User root` /
+    `Match Address ...` block re-enabling a setting was invisible. Resolve with
+    a connection spec for a local root login (older OpenSSH needs user, host
+    and addr together); Match blocks keyed on other users/addresses can't be
+    hit by one spec, so checks also scan the config with `match_override_result`.
+    Falls back to plain `sshd -T` only if `-C` is rejected; a failing `sshd -T`
+    returns None, never a value.
     """
-    try:
-        r = subprocess.run(["sshd", "-T"], capture_output=True, text=True)
-        if r.returncode == 0:
-            for line in r.stdout.splitlines():
-                parts = line.strip().split(None, 1)
-                if len(parts) == 2 and parts[0].lower() == key.lower():
-                    return parts[1]
-    except FileNotFoundError:
-        pass
+    spec = f"user=root,host={socket.gethostname() or 'localhost'},addr=127.0.0.1"
+    out = _sshd_dump(["-C", spec])
+    if out is None:
+        out = _sshd_dump([])
+    if out is None:
+        return None
+    for line in out.splitlines():
+        parts = line.strip().split(None, 1)
+        if len(parts) == 2 and parts[0].lower() == key.lower():
+            return parts[1]
     return None
+
+
+def _include_targets(token: str) -> list[Path]:
+    base = Path(SSHD_CONFIG).parent
+    pattern = token if token.startswith("/") else str(base / token)
+    return [Path(p) for p in sorted(glob.glob(pattern)) if Path(p).is_file()]
+
+
+def match_block_settings(key: str) -> list[tuple[str, str]] | None:
+    """Every value `key` is given inside a Match block, as (criteria, value).
+
+    Follows sshd_config and its Include'd files (an Include inside a Match
+    block inherits that Match; a Match ends at the next Match or end of file,
+    `Match all` returns to global scope). Without a main config, falls back to
+    the drop-in dir. Returns None if a config file could not be read.
+    """
+    key_l = key.lower()
+    found: list[tuple[str, str]] = []
+    seen: set[str] = set()
+
+    def walk(path: Path, ctx: str | None, depth: int) -> bool:
+        if depth > 16 or str(path) in seen:
+            return True
+        seen.add(str(path))
+        try:
+            text = path.read_text()
+        except OSError:
+            return False
+        cur = ctx
+        for raw in text.splitlines():
+            line = raw.strip()
+            if not line or line.startswith("#"):
+                continue
+            parts = re.split(r"[\s=]+", line, maxsplit=1)
+            kw = parts[0].lower()
+            arg = parts[1].strip() if len(parts) > 1 else ""
+            if kw == "match":
+                cur = None if arg.lower() == "all" else arg
+            elif kw == "include":
+                for tok in arg.split():
+                    for inc in _include_targets(tok.strip('"')):
+                        if not walk(inc, cur, depth + 1):
+                            return False
+            elif kw == key_l and cur is not None:
+                found.append((cur, arg.strip('"')))
+        return True
+
+    main = Path(SSHD_CONFIG)
+    if main.exists():
+        roots = [main]
+    else:
+        d = Path(SSHD_CONFIG_D)
+        roots = sorted(d.glob("*.conf")) if d.is_dir() else []
+    for f in roots:
+        if not walk(f, None, 0):
+            return None
+    return found
+
+
+def match_override_result(key: str, evaluate) -> CheckResult | None:
+    """Run a check's value test over every Match-block value of `key`.
+
+    Returns a fail (or warn) naming the Match block that sets a non-compliant
+    value, a warn if the config could not be read, or None when every
+    Match-scoped value of `key` passes.
+    """
+    overrides = match_block_settings(key)
+    if overrides is None:
+        return CheckResult("warn", f"could not read sshd config files to check Match blocks for {key}")
+    soft = None
+    for crit, val in overrides:
+        r = evaluate(val)
+        if r.status == "pass":
+            continue
+        msg = f"Match {crit}: {key} {val}" + (f" ({r.detail})" if r.detail else "")
+        if r.status == "fail":
+            return CheckResult("fail", msg)
+        soft = soft or CheckResult(r.status, msg)
+    return soft
+
+
+def sshd_seconds(val: str) -> int | None:
+    """Parse an sshd_config time value ("300", "5m", "1h30m") to seconds."""
+    v = val.strip().lower()
+    if v.isdigit():
+        return int(v)
+    parts = re.findall(r"(\d+)([smhdw]?)", v)
+    if not parts or "".join(n + u for n, u in parts) != v:
+        return None
+    mult = {"": 1, "s": 1, "m": 60, "h": 3600, "d": 86400, "w": 604800}
+    return sum(int(n) * mult[u] for n, u in parts)
+
+
+def audit_sshd(key: str, value: str | None, evaluate) -> CheckResult:
+    """Evaluate an effective `sshd -T` value, then every Match-block value."""
+    if value is None:
+        return CheckResult("warn", "could not read sshd config")
+    res = evaluate(value)
+    if res.status != "pass":
+        return res
+    return match_override_result(key, evaluate) or res
 
 
 def setting_in_global_scope(key: str) -> bool | None:

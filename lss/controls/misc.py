@@ -92,29 +92,54 @@ register(Control(
 
 # ---- CIS 5.2.12: Ensure SSH Idle Timeout is not 0 ----
 
-def _check_ssh_alive_not_zero() -> CheckResult:
-    val = _get_sshd_setting("clientaliveinterval")
-    if val is None:
-        return CheckResult("warn", "could not read sshd config")
+def _eval_ssh_alive_not_zero(interval: str, count: str) -> CheckResult:
+    # ClientAliveCountMax 0 disables termination of unresponsive sessions
+    # (OpenSSH >= 8.2), so a 0 count is as disabled as a 0 interval.
+    from lss.lib.sshd import sshd_seconds
+    iv = sshd_seconds(interval)
     try:
-        n = int(val)
+        cm = int(count)
     except ValueError:
-        return CheckResult("fail", f"ClientAliveInterval={val}")
-    if n > 0:
-        return CheckResult("pass")
-    return CheckResult("fail", "ClientAliveInterval=0 (no timeout)")
+        cm = None
+    if iv is None or cm is None:
+        return CheckResult("fail", f"ClientAliveInterval={interval}, ClientAliveCountMax={count}")
+    if iv <= 0:
+        return CheckResult("fail", "ClientAliveInterval=0 (no timeout)")
+    if cm <= 0:
+        return CheckResult("fail", "ClientAliveCountMax=0 (idle sessions are never terminated)")
+    return CheckResult("pass")
+
+
+def _check_ssh_alive_not_zero() -> CheckResult:
+    from lss.lib.sshd import match_override_result
+    interval = _get_sshd_setting("clientaliveinterval")
+    count = _get_sshd_setting("clientalivecountmax")
+    if interval is None or count is None:
+        return CheckResult("warn", "could not read sshd config")
+    res = _eval_ssh_alive_not_zero(interval, count)
+    if res.status != "pass":
+        return res
+    return (match_override_result("ClientAliveInterval", lambda v: _eval_ssh_alive_not_zero(v, count))
+            or match_override_result("ClientAliveCountMax", lambda v: _eval_ssh_alive_not_zero(interval, v))
+            or res)
 
 
 def _fix_ssh_alive_not_zero() -> list[RollbackEntry]:
-    """If ClientAliveInterval is 0 or unset, restore the CIS-recommended 300s."""
+    """Restore the CIS-recommended 300s interval / count 3 where either is 0 or unset."""
+    from lss.lib.sshd import sshd_seconds
+    entries = []
     val = _get_sshd_setting("clientaliveinterval")
-    if val is not None:
-        try:
-            if int(val) > 0:
-                return []
-        except ValueError:
-            pass
-    return [_set_sshd_setting("ClientAliveInterval", "300")]
+    iv = sshd_seconds(val) if val is not None else None
+    if not iv:
+        entries.append(_set_sshd_setting("ClientAliveInterval", "300"))
+    count = _get_sshd_setting("clientalivecountmax")
+    try:
+        cm = int(count) if count is not None else 0
+    except ValueError:
+        cm = 0
+    if cm <= 0:
+        entries.append(_set_sshd_setting("ClientAliveCountMax", "3"))
+    return entries
 
 
 register(Control(

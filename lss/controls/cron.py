@@ -184,9 +184,28 @@ register(Control(
 
 # ---- CIS 5.1.9: Ensure at is restricted to authorized users ----
 
+AT_ALLOW = "/etc/at.allow"
+AT_DENY = "/etc/at.deny"
+
+
+def _stat_file(path: str) -> os.stat_result:
+    return os.stat(path)
+
+
+def _at_allowed_gids() -> set[int]:
+    """root, plus daemon (Debian's at ships its files root:daemon)."""
+    import grp
+    gids = {0}
+    try:
+        gids.add(grp.getgrnam("daemon").gr_gid)
+    except KeyError:
+        pass
+    return gids
+
+
 def _check_at_allow() -> CheckResult:
-    deny = Path("/etc/at.deny")
-    allow = Path("/etc/at.allow")
+    deny = Path(AT_DENY)
+    allow = Path(AT_ALLOW)
     # If at is not installed, not applicable
     try:
         r = subprocess.run(["which", "at"], capture_output=True, text=True)
@@ -195,35 +214,72 @@ def _check_at_allow() -> CheckResult:
     if r.returncode != 0:
         return CheckResult("pass", "at not installed")
     if deny.exists():
-        return CheckResult("fail", "/etc/at.deny exists — use at.allow instead")
-    if not allow.exists():
-        return CheckResult("fail", "/etc/at.allow does not exist")
+        return CheckResult("fail", f"{AT_DENY} exists — use at.allow instead")
+    try:
+        st = _stat_file(AT_ALLOW)
+    except FileNotFoundError:
+        return CheckResult("fail", f"{AT_ALLOW} does not exist")
+    except OSError as e:
+        return CheckResult("warn", f"cannot stat {AT_ALLOW}: {e.strerror or e}")
+    # Anyone who can write at.allow can grant themselves `at`.
+    issues = []
+    if st.st_uid != 0:
+        issues.append(f"owner uid={st.st_uid}, expected root")
+    if st.st_gid not in _at_allowed_gids():
+        issues.append(f"group gid={st.st_gid}, expected root or daemon")
+    mode = stat.S_IMODE(st.st_mode)
+    if mode & ~0o640:
+        issues.append(f"mode={mode:04o}, expected 0640 or stricter")
+    if issues:
+        return CheckResult("fail", f"{AT_ALLOW}: " + ", ".join(issues))
     return CheckResult("pass")
 
 
 def _fix_at_allow() -> list[RollbackEntry]:
     entries = []
-    deny = Path("/etc/at.deny")
+    deny = Path(AT_DENY)
     if deny.exists():
         bkp = journal.backup_file(str(deny))
         deny.unlink()
         entries.append(RollbackEntry(
-            action="removed /etc/at.deny",
+            action=f"removed {AT_DENY}",
             path=str(deny),
             backup=bkp,
         ))
 
-    allow = Path("/etc/at.allow")
+    allow = Path(AT_ALLOW)
     if not allow.exists():
         allow.write_text("root\n")
         os.chmod(str(allow), 0o640)
         os.chown(str(allow), 0, 0)
         entries.append(RollbackEntry(
-            action="created /etc/at.allow with root only",
+            action=f"created {AT_ALLOW} with root only",
             undo=[["rm", "-f", str(allow)]],
             path=str(allow),
         ))
+        return entries
 
+    # at.allow exists — fix ownership and tighten mode, recording the old
+    # values so rollback restores them.
+    st = _stat_file(AT_ALLOW)
+    uid, gid = st.st_uid, st.st_gid
+    if uid != 0 or gid not in _at_allowed_gids():
+        new_gid = gid if gid in _at_allowed_gids() else 0
+        os.chown(str(allow), 0, new_gid)
+        entries.append(RollbackEntry(
+            action=f"set {AT_ALLOW} owner to 0:{new_gid} (was {uid}:{gid})",
+            undo=[["chown", f"{uid}:{gid}", str(allow)]],
+            path=str(allow),
+        ))
+    old_mode = stat.S_IMODE(st.st_mode)
+    if old_mode & ~0o640:
+        new_mode = old_mode & 0o640
+        os.chmod(str(allow), new_mode)
+        entries.append(RollbackEntry(
+            action=f"set {AT_ALLOW} mode to {new_mode:04o} (was {old_mode:04o})",
+            undo=[["chmod", f"{old_mode:04o}", str(allow)]],
+            path=str(allow),
+        ))
     return entries
 
 
