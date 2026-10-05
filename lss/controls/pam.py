@@ -11,45 +11,41 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-from lss.lib import journal
+from lss.lib import authconf, journal
 from lss.lib.registry import Control, CheckResult, RollbackEntry, register
 
 
-def _get_pwquality(key: str) -> int | None:
-    """Read a value from /etc/security/pwquality.conf."""
-    conf = Path("/etc/security/pwquality.conf")
-    if not conf.exists():
+PWQUALITY_CONF = "/etc/security/pwquality.conf"
+PWQUALITY_CONF_D = "/etc/security/pwquality.conf.d"
+PASSWORD_STACKS = ("/etc/pam.d/common-password", "/etc/pam.d/system-auth", "/etc/pam.d/password-auth")
+LOGIN_DEFS = "/etc/login.defs"
+
+
+def _pwq(key: str) -> tuple[list[tuple[str, str | None]], bool]:
+    """Effective pwquality `key` per password stack (module args override
+    pwquality.conf, which overrides pwquality.conf.d), plus whether
+    pam_pwquality is loaded at all. Raises OSError on unreadable state."""
+    return authconf.pwquality_effective(
+        key, Path(PWQUALITY_CONF), Path(PWQUALITY_CONF_D),
+        [Path(p) for p in PASSWORD_STACKS])
+
+
+def _pwq_int(val: str | None) -> int | None:
+    try:
+        return int(val) if val is not None else None
+    except ValueError:
         return None
-    for line in conf.read_text().splitlines():
-        line = line.strip()
-        if line.startswith("#") or not line:
-            continue
-        m = re.match(rf"^\s*{key}\s*=\s*(-?\d+)", line)
-        if m:
-            return int(m.group(1))
-    return None
 
 
 def _set_pwquality(key: str, value: int) -> RollbackEntry:
-    """Set a value in /etc/security/pwquality.conf."""
-    conf = Path("/etc/security/pwquality.conf")
+    """Set `key` in /etc/security/pwquality.conf. libpwquality reads that file
+    after pwquality.conf.d, so the value written here wins over any drop-in.
+    Only uncommented lines are rewritten (and duplicates dropped)."""
+    conf = Path(PWQUALITY_CONF)
     bkp = journal.backup_file(str(conf))
-
-    if conf.exists():
-        text = conf.read_text()
-        lines = text.splitlines(keepends=True)
-        found = False
-        for i, line in enumerate(lines):
-            if re.match(rf"^\s*#?\s*{key}\s*=", line):
-                lines[i] = f"{key} = {value}\n"
-                found = True
-                break
-        if not found:
-            lines.append(f"{key} = {value}\n")
-        conf.write_text("".join(lines))
-    else:
-        conf.write_text(f"# Created by LSS\n{key} = {value}\n")
-
+    if not conf.exists():
+        conf.write_text("# Created by LSS\n")
+    authconf.set_conf_key(conf, key, f"{key} = {value}")
     return RollbackEntry(
         action=f"set {key} = {value} in pwquality.conf",
         path=str(conf),
@@ -58,54 +54,38 @@ def _set_pwquality(key: str, value: int) -> RollbackEntry:
     )
 
 
+_PWQ_NOT_LOADED = (
+    "pam_pwquality.so is not loaded (uncommented, required/requisite) in the "
+    "password PAM stack, so pwquality settings are NOT enforced. On Debian/Ubuntu: "
+    "`sudo apt install libpam-pwquality` then ensure `pam-auth-update` "
+    "wires it into /etc/pam.d/common-password. On RHEL: "
+    "`authselect enable-feature with-pwquality`."
+)
+
+
 # ---- CIS 5.3.1: Ensure password creation requirements are configured ----
 # This is a compound check: dcredit, ucredit, lcredit, ocredit
 
-def _pwquality_module_active() -> bool:
-    """True if pam_pwquality.so (or legacy pam_cracklib.so) is loaded by an
-    UNCOMMENTED line in the password PAM stack. pwquality.conf settings are
-    inert unless the module actually references them, so a check that reads only
-    the conf file can pass while nothing is enforced."""
-    for pam_path in ("/etc/pam.d/common-password", "/etc/pam.d/system-auth", "/etc/pam.d/password-auth"):
-        p = Path(pam_path)
-        if not p.exists():
-            continue
-        for line in p.read_text().splitlines():
-            s = line.lstrip()
-            if s.startswith("#") or not s:
-                continue
-            if "pam_pwquality.so" in s or "pam_cracklib.so" in s:
-                return True
-    return False
-
-
 def _check_pw_complexity() -> CheckResult:
     issues = []
-    for key, desc, threshold in [
-        ("dcredit", "digit", -1),
-        ("ucredit", "uppercase", -1),
-        ("lcredit", "lowercase", -1),
-        ("ocredit", "special char", -1),
-    ]:
-        val = _get_pwquality(key)
-        if val is None:
-            issues.append(f"{key} not set")
-        elif val > threshold:  # negative means "require at least N"
-            issues.append(f"{key}={val}, recommended: ≤ {threshold}")
+    loaded = True
+    try:
+        for key in ("dcredit", "ucredit", "lcredit", "ocredit"):
+            vals, loaded = _pwq(key)
+            for where, val in vals:
+                n = _pwq_int(val)
+                if val is None:
+                    issues.append(f"{key} not set")
+                elif n is None or n > -1:  # negative means "require at least N"
+                    issues.append(f"{where}, recommended: ≤ -1")
+    except OSError as e:
+        return CheckResult("warn", f"could not read pwquality/PAM config: {e}")
 
     if issues:
-        return CheckResult("fail", "; ".join(issues))
-
+        return CheckResult("fail", "; ".join(dict.fromkeys(issues)))
     # Values are right, but they only take effect if the module is loaded.
-    if not _pwquality_module_active():
-        return CheckResult(
-            "manual",
-            "pwquality.conf complexity is set but pam_pwquality.so is not loaded "
-            "in the password PAM stack, so it is NOT enforced. On Debian/Ubuntu: "
-            "`sudo apt install libpam-pwquality` then ensure `pam-auth-update` "
-            "wires it into /etc/pam.d/common-password. On RHEL: "
-            "`authselect enable-feature with-pwquality`.",
-        )
+    if not loaded:
+        return CheckResult("manual", "pwquality complexity is set but " + _PWQ_NOT_LOADED)
     return CheckResult("pass")
 
 
@@ -127,120 +107,162 @@ register(Control(
 
 # ---- CIS 5.3.2: Ensure lockout for failed password attempts is configured ----
 #
-# pam_faillock (or the legacy pam_tally2) is what enforces account lockout —
-# /etc/security/faillock.conf is only read when pam_faillock.so is loaded by
-# the PAM auth stack. Writing faillock.conf alone is a no-op if PAM doesn't
-# reference the module.
+# pam_faillock only locks accounts out when the auth stack runs it in BOTH
+# modes around pam_unix: `preauth` before pam_unix (refuses a locked account
+# before the password is even checked) and `authfail` after it (records the
+# failure). Without preauth, failures are counted but nothing is ever denied.
+# The account stack also needs pam_faillock (resets the counter on success).
+# /etc/security/faillock.conf is only read when the module is loaded.
 #
-# The check below requires an UNCOMMENTED pam_faillock or pam_tally2 line in
-# the auth stack before passing. The fix continues to write faillock.conf so
-# the policy is applied on hosts where pam_faillock is configured, but the
-# check no longer pretends a stand-alone faillock.conf is sufficient.
+# Debian 12 libpam-runtime ships no faillock pam-config profile. The 5.3.2
+# fix installs the two CIS Debian 12 profiles (rollback removes them):
 #
-# Debian 12 (and earlier) stock libpam-runtime does NOT ship a faillock
-# pam-config profile, despite older docs implying it does — only unix,
-# systemd, mkhomedir, and gnome-keyring profiles are present in
-# /usr/share/pam-configs/. So `pam-auth-update --enable faillock --package`
-# silently no-ops on a stock host. To close that gap without taking on the
-# full PAM-stack-edit subsystem (deferred to a future release), the 5.3.2 fix now
-# installs an LSS-provided faillock profile at /usr/share/pam-configs/faillock
-# (rollback removes it). Operators still explicitly enable it via
-# `sudo pam-auth-update --enable faillock --package` — we never auto-edit
-# common-auth ourselves, since a botched PAM stack edit can lock the host.
+#   faillock         Priority 0,    Auth: [default=die] pam_faillock.so authfail
+#   faillock_notify  Priority 1024, Auth: requisite pam_faillock.so preauth
+#                                   Account: required pam_faillock.so
+#
+# giving common-auth: preauth -> pam_unix -> authfail (verified with
+# pam-auth-update in a debian:12 container, which also locked a test user out
+# after `deny` failures). The operator enables them explicitly with
+# `sudo pam-auth-update --enable faillock faillock_notify --package` — LSS never
+# edits common-auth itself, since a botched PAM stack edit can lock the host.
 
-# Conservative pam-auth-update profile. Default: no — operator must opt in
-# with --enable. Auth uses [default=ignore] so a missing or broken
-# pam_faillock.so cannot break the auth chain (no [default=die]); lockout
-# enforcement happens in the Account stack via `required pam_faillock.so`,
-# which is how authselect's with-faillock feature gets it right too.
 _FAILLOCK_PAM_PROFILE = """\
-Name: pam_faillock — track and prevent multiple bad logins (provided by LSS)
+Name: Enable pam_faillock to deny access (provided by LSS)
 Default: no
 Priority: 0
 Auth-Type: Primary
 Auth:
-\t[default=ignore]\tpam_faillock.so authfail
-Auth-Initial:
-\t[default=ignore]\tpam_faillock.so authfail
-Account-Type: Additional
+\t[default=die]\tpam_faillock.so authfail
+"""
+
+_FAILLOCK_NOTIFY_PAM_PROFILE = """\
+Name: Notify of failed login attempts and reset count upon success (provided by LSS)
+Default: no
+Priority: 1024
+Auth-Type: Primary
+Auth:
+\trequisite\tpam_faillock.so preauth
+Account-Type: Primary
 Account:
-\trequired\tpam_faillock.so
-Account-Initial:
 \trequired\tpam_faillock.so
 """
 
 _FAILLOCK_PROFILE_PATH = Path("/usr/share/pam-configs/faillock")
+_FAILLOCK_NOTIFY_PROFILE_PATH = Path("/usr/share/pam-configs/faillock_notify")
+
+FAILLOCK_CONF = "/etc/security/faillock.conf"
+COMMON_AUTH = "/etc/pam.d/common-auth"
+COMMON_ACCOUNT = "/etc/pam.d/common-account"
+RHEL_AUTH_STACKS = ("/etc/pam.d/system-auth", "/etc/pam.d/password-auth")
 
 _FAILLOCK_REMEDIATION = (
-    "to enable: an LSS-provided faillock pam-config profile is installed at "
-    "/usr/share/pam-configs/faillock by `sudo lss harden --confirm --control 5.3.2`. "
-    "Stock Debian/Ubuntu libpam-runtime does NOT ship one. After the profile is in "
-    "place, run `sudo pam-auth-update --enable faillock --package` to wire it into "
-    "/etc/pam.d/common-auth. On RHEL/Fedora with authselect, "
-    "`sudo authselect enable-feature with-faillock` instead. Re-run lss audit to "
-    "confirm; faillock.conf is already populated with the deny/unlock policy."
+    "to enable: `sudo lss harden --confirm --control 5.3.2` installs the CIS "
+    "faillock and faillock_notify pam-config profiles under /usr/share/pam-configs/ "
+    "(stock Debian/Ubuntu libpam-runtime ships none). Then run "
+    "`sudo pam-auth-update --enable faillock faillock_notify --package` so "
+    "/etc/pam.d/common-auth runs `pam_faillock.so preauth` before pam_unix and "
+    "`pam_faillock.so authfail` after it, and common-account loads pam_faillock. "
+    "On RHEL/Fedora with authselect, `sudo authselect enable-feature with-faillock` "
+    "instead. Re-run lss audit to confirm; faillock.conf is already populated with "
+    "the deny/unlock policy."
 )
 
 
-def _faillock_module_active(pam_text: str) -> bool:
-    """True if any uncommented line in the PAM file references pam_faillock
-    or pam_tally2. Substring matching alone would also match commented-out
-    examples (Debian's libpam-runtime ships a commented `pam_faillock` line)."""
-    for line in pam_text.splitlines():
-        stripped = line.lstrip()
-        if stripped.startswith("#") or not stripped:
-            continue
-        if "pam_faillock" in stripped or "pam_tally2" in stripped:
-            return True
-    return False
+def _faillock_issues(auth_text: str, account_text: str, name: str) -> list[str]:
+    """What keeps this auth/account stack from locking accounts out."""
+    auth = [ln for ln in authconf.pam_lines(auth_text) if ln.type == "auth"]
+    account = [ln for ln in authconf.pam_lines(account_text) if ln.type == "account"]
+    unix = next((i for i, ln in enumerate(auth) if ln.module == "pam_unix.so"), None)
+    if unix is None:
+        return [f"no pam_unix auth line in {name}"]
+    # Legacy pam_tally2 (removed in Linux-PAM 1.5) locks out from one enforcing
+    # auth line before pam_unix, but only when deny= is set (default 0 = off).
+    if any(i < unix and ln.module == "pam_tally2.so" and ln.arg("deny") not in (None, "0")
+           and authconf.control_enforces(ln.control) for i, ln in enumerate(auth)):
+        return []
+    issues = []
+    if not any(i < unix and ln.module == "pam_faillock.so" and "preauth" in ln.args
+               and authconf.control_enforces(ln.control) for i, ln in enumerate(auth)):
+        issues.append(f"no required/requisite `pam_faillock.so preauth` before pam_unix in {name}")
+    if not any(i > unix and ln.module == "pam_faillock.so" and "authfail" in ln.args
+               for i, ln in enumerate(auth)):
+        issues.append(f"no `pam_faillock.so authfail` after pam_unix in {name}")
+    if not any(ln.module == "pam_faillock.so" for ln in account):
+        issues.append(f"pam_faillock not in the account stack of {name}")
+    return issues
 
 
 def _check_faillock() -> CheckResult:
-    for pam_path in ["/etc/pam.d/common-auth", "/etc/pam.d/system-auth"]:
-        p = Path(pam_path)
-        if p.exists() and _faillock_module_active(p.read_text()):
-            return CheckResult("pass", f"pam_faillock active in {pam_path}")
-    return CheckResult("manual", "pam_faillock not active in PAM auth stack — " + _FAILLOCK_REMEDIATION)
+    try:
+        if Path(COMMON_AUTH).exists():
+            acct = Path(COMMON_ACCOUNT)
+            issues = _faillock_issues(Path(COMMON_AUTH).read_text(),
+                                      acct.read_text() if acct.exists() else "",
+                                      f"{COMMON_AUTH}/{COMMON_ACCOUNT}")
+            where = COMMON_AUTH
+        else:
+            stacks = [p for p in RHEL_AUTH_STACKS if Path(p).exists()]
+            if not stacks:
+                return CheckResult("manual", "no PAM auth stack found — " + _FAILLOCK_REMEDIATION)
+            issues = []
+            for p in stacks:
+                text = Path(p).read_text()
+                issues += _faillock_issues(text, text, p)
+            where = ", ".join(stacks)
+    except OSError as e:
+        return CheckResult("warn", f"could not read the PAM auth stack: {e}")
+    if issues:
+        return CheckResult("manual", "; ".join(issues) + " — " + _FAILLOCK_REMEDIATION)
+    return CheckResult("pass", f"pam_faillock preauth/authfail/account active in {where}")
+
+
+def _install_profile(path: Path, content: str) -> RollbackEntry | None:
+    """Install an LSS pam-config profile unless an operator/distro one is
+    there. An older LSS profile (no preauth) is replaced, with a backup."""
+    if path.exists():
+        try:
+            current = path.read_text()
+        except OSError:
+            return None
+        if "(provided by LSS)" not in current or current == content:
+            return None
+        bkp = journal.backup_file(str(path))
+        path.write_text(content)
+        return RollbackEntry(action=f"updated LSS pam-config profile {path.name}",
+                             path=str(path), backup=bkp)
+    path.write_text(content)
+    # If the operator enabled the profile between harden and rollback, the
+    # live stack still references it; rollback disables it via pam-auth-update
+    # before removing the file so the auth stack stays consistent.
+    return RollbackEntry(
+        action=f"installed LSS pam-config profile {path.name}",
+        path=str(path),
+        backup="",
+        undo=[
+            ["pam-auth-update", "--package", "--disable", path.name],
+            ["rm", "-f", str(path)],
+        ],
+    )
 
 
 def _fix_faillock() -> list[RollbackEntry]:
     """Write CIS-aligned lockout policy to /etc/security/faillock.conf and
-    install an LSS-provided faillock pam-config profile if one is missing.
+    install the faillock / faillock_notify pam-config profiles if missing.
 
-    Two steps, both rollback-tracked:
-
-    1. faillock.conf — writes deny=5, unlock_time=900, fail_interval=900.
-       Idempotent (key updates in place, no duplication).
-
-    2. /usr/share/pam-configs/faillock — only created if absent and the
-       /usr/share/pam-configs/ directory exists (Debian-family with
-       libpam-runtime). If a profile is already present (operator-supplied,
-       or installed by a future libpam-runtime), we leave it alone.
-
-    The fix never edits /etc/pam.d/common-auth itself. The operator runs
-    `sudo pam-auth-update --enable faillock --package` to wire the profile
-    into the live PAM stack — that's the conservative split: LSS supplies
-    the profile, operator chooses when to activate.
+    Both steps are rollback-tracked. The profiles are only installed where
+    /usr/share/pam-configs/ exists (Debian-family). The fix never edits
+    /etc/pam.d/common-auth itself: the operator runs
+    `sudo pam-auth-update --enable faillock faillock_notify --package`.
     """
     entries: list[RollbackEntry] = []
 
-    conf = Path("/etc/security/faillock.conf")
+    conf = Path(FAILLOCK_CONF)
     bkp = journal.backup_file(str(conf))
-    desired = {"deny": "5", "unlock_time": "900", "fail_interval": "900"}
-    lines = conf.read_text().splitlines(keepends=True) if conf.exists() else []
-    for key, value in desired.items():
-        new_line = f"{key} = {value}\n"
-        found = False
-        for i, line in enumerate(lines):
-            if re.match(rf"^\s*#?\s*{key}\s*=", line):
-                lines[i] = new_line
-                found = True
-                break
-        if not found:
-            if lines and not lines[-1].endswith("\n"):
-                lines.append("\n")
-            lines.append(new_line)
-    conf.write_text("".join(lines))
+    if not conf.exists():
+        conf.write_text("")
+    for key, value in {"deny": "5", "unlock_time": "900", "fail_interval": "900"}.items():
+        authconf.set_conf_key(conf, key, f"{key} = {value}")
     entries.append(RollbackEntry(
         action="wrote pam_faillock policy to faillock.conf",
         path=str(conf),
@@ -248,28 +270,12 @@ def _fix_faillock() -> list[RollbackEntry]:
         undo=[] if bkp else [["rm", "-f", str(conf)]],
     ))
 
-    # Install the pam-config profile only on hosts that actually use
-    # pam-auth-update (i.e., /usr/share/pam-configs/ exists). Don't clobber
-    # an existing profile — could be a distro-supplied one or operator-
-    # customized.
-    pam_configs_dir = _FAILLOCK_PROFILE_PATH.parent
-    if pam_configs_dir.is_dir() and not _FAILLOCK_PROFILE_PATH.exists():
-        _FAILLOCK_PROFILE_PATH.write_text(_FAILLOCK_PAM_PROFILE)
-        entries.append(RollbackEntry(
-            action="installed LSS faillock pam-config profile",
-            path=str(_FAILLOCK_PROFILE_PATH),
-            backup="",
-            # No backup (the file did not previously exist), so undo just
-            # removes it. If the operator ran `pam-auth-update --enable
-            # faillock --package` between harden and rollback, the live
-            # common-auth still references the profile name; rollback also
-            # disables it via pam-auth-update so the auth stack stays
-            # consistent.
-            undo=[
-                ["pam-auth-update", "--package", "--disable", "faillock"],
-                ["rm", "-f", str(_FAILLOCK_PROFILE_PATH)],
-            ],
-        ))
+    if _FAILLOCK_PROFILE_PATH.parent.is_dir():
+        for path, content in ((_FAILLOCK_PROFILE_PATH, _FAILLOCK_PAM_PROFILE),
+                              (_FAILLOCK_NOTIFY_PROFILE_PATH, _FAILLOCK_NOTIFY_PAM_PROFILE)):
+            entry = _install_profile(path, content)
+            if entry:
+                entries.append(entry)
 
     return entries
 
@@ -320,8 +326,10 @@ def _check_pw_reuse() -> CheckResult:
         if not p.exists():
             continue
         for line in p.read_text().splitlines():
-            stripped = line.lstrip()
-            if stripped.startswith("#") or not stripped:
+            # Linux-PAM drops everything from '#' to end of line.
+            line = line.split("#", 1)[0]
+            stripped = line.strip()
+            if not stripped:
                 continue
             # pam_unix with remember= as a module argument is the legacy approach.
             if "pam_unix" in line:
@@ -393,62 +401,56 @@ _STRONG_HASHES = {"yescrypt", "sha512"}
 
 
 def _check_pw_hash() -> CheckResult:
-    # A pam_unix.so hashing argument OVERRIDES login.defs ENCRYPT_METHOD, so if
-    # the PAM stack pins an algorithm that is what actually applies. Check the
-    # (uncommented) password stack first, and only the real pam_unix directive —
-    # not a substring anywhere in the file (which matched commented examples).
-    for pam_path in ("/etc/pam.d/common-password", "/etc/pam.d/system-auth", "/etc/pam.d/password-auth"):
-        p = Path(pam_path)
-        if not p.exists():
-            continue
-        for line in p.read_text().splitlines():
-            s = line.strip()
-            if s.startswith("#") or not s or "pam_unix.so" not in s:
+    # A pam_unix.so hashing argument on the PASSWORD line OVERRIDES login.defs
+    # ENCRYPT_METHOD; that line is the one that hashes new passwords. The
+    # auth-type pam_unix line (first in RHEL's system-auth) carries no hashing
+    # option, so reading it hid a `password ... pam_unix.so md5`. Every stack
+    # that exists must use a strong algorithm.
+    weak, unpinned, strong = [], False, None
+    try:
+        for pam_path in PASSWORD_STACKS:
+            p = Path(pam_path)
+            if not p.exists():
                 continue
-            algos = [t.lower() for t in s.split() if t.lower() in _HASH_ALGOS]
-            if algos:
-                if any(a in _STRONG_HASHES for a in algos):
-                    return CheckResult("pass", f"pam_unix uses {algos[0]}")
-                return CheckResult("fail", f"pam_unix hashing={algos[0]}, recommended: sha512 or yescrypt")
-            # pam_unix present with no explicit algo -> it falls back to login.defs.
-            break
+            line = next((ln for ln in authconf.pam_lines(p.read_text())
+                         if ln.type == "password" and ln.module == "pam_unix.so"), None)
+            if line is None:
+                continue
+            # pam_unix's hashing flags are mutually exclusive; the last one wins.
+            algos = [a.lower() for a in line.args if a.lower() in _HASH_ALGOS]
+            if not algos:
+                unpinned = True
+            elif algos[-1] in _STRONG_HASHES:
+                strong = algos[-1]
+            else:
+                weak.append(f"pam_unix hashing={algos[-1]} in {pam_path}")
+        if weak:
+            return CheckResult("fail", "; ".join(weak) + ", recommended: sha512 or yescrypt")
+        if strong and not unpinned:
+            return CheckResult("pass", f"pam_unix uses {strong}")
 
-    # login.defs ENCRYPT_METHOD (authoritative when pam_unix pins no algorithm).
-    login_defs = Path("/etc/login.defs")
-    if login_defs.exists():
-        for line in login_defs.read_text().splitlines():
-            stripped = line.strip()
-            if stripped.startswith("#") or not stripped:
-                continue
-            parts = stripped.split()
-            if parts[0] == "ENCRYPT_METHOD":
-                val = parts[1] if len(parts) > 1 else ""
+        # login.defs ENCRYPT_METHOD (authoritative when pam_unix pins no algorithm).
+        login_defs = Path(LOGIN_DEFS)
+        if login_defs.exists():
+            val = authconf.login_defs_value(login_defs.read_text(), "ENCRYPT_METHOD")
+            if val is not None:
                 if val.upper() in ("SHA512", "YESCRYPT"):
                     return CheckResult("pass")
                 return CheckResult("fail", f"ENCRYPT_METHOD={val}, recommended: SHA512 or YESCRYPT")
+    except OSError as e:
+        return CheckResult("warn", f"could not read PAM/login.defs: {e}")
 
     return CheckResult("warn", "could not determine password hashing algorithm")
 
 
 def _set_login_defs(key: str, value: str) -> RollbackEntry:
-    """Set a KEY VALUE pair in /etc/login.defs, preserving original on rollback."""
-    p = Path("/etc/login.defs")
+    """Set a KEY VALUE pair in /etc/login.defs, preserving original on rollback.
+    Only uncommented lines are rewritten (shadow-utils reads the last one, so
+    duplicates are dropped); a commented example like Debian's
+    `#\tPASS_MIN_DAYS` is left alone and the value is appended if unset."""
+    p = Path(LOGIN_DEFS)
     bkp = journal.backup_file(str(p))
-    lines = p.read_text().splitlines(keepends=True) if p.exists() else []
-    new_line = f"{key}\t{value}\n"
-    found = False
-    for i, line in enumerate(lines):
-        stripped = line.lstrip("#").strip()
-        parts = stripped.split()
-        if parts and parts[0] == key:
-            lines[i] = new_line
-            found = True
-            break
-    if not found:
-        if lines and not lines[-1].endswith("\n"):
-            lines.append("\n")
-        lines.append(new_line)
-    p.write_text("".join(lines))
+    authconf.set_conf_key(p, key, f"{key}\t{value}")
     return RollbackEntry(
         action=f"set {key} {value} in /etc/login.defs",
         path=str(p),
@@ -473,23 +475,22 @@ register(Control(
 
 def _check_pam_mindays() -> CheckResult:
     """Ensure pam_unix has a minimum password age that matches login.defs."""
-    login_defs = Path("/etc/login.defs")
+    login_defs = Path(LOGIN_DEFS)
     if not login_defs.exists():
         return CheckResult("warn", "login.defs not found")
-    for line in login_defs.read_text().splitlines():
-        stripped = line.strip()
-        if stripped.startswith("#") or not stripped:
-            continue
-        parts = stripped.split()
-        if parts[0] == "PASS_MIN_DAYS" and len(parts) >= 2:
-            try:
-                n = int(parts[1])
-                if n >= 1:
-                    return CheckResult("pass")
-                return CheckResult("fail", f"PASS_MIN_DAYS={n}")
-            except ValueError:
-                pass
-    return CheckResult("warn", "PASS_MIN_DAYS not configured")
+    try:
+        val = authconf.login_defs_value(login_defs.read_text(), "PASS_MIN_DAYS")
+    except OSError as e:
+        return CheckResult("warn", f"login.defs not readable: {e}")
+    if val is None:
+        return CheckResult("warn", "PASS_MIN_DAYS not configured")
+    try:
+        n = int(val)
+    except ValueError:
+        return CheckResult("fail", f"PASS_MIN_DAYS={val}")
+    if n >= 1:
+        return CheckResult("pass")
+    return CheckResult("fail", f"PASS_MIN_DAYS={n}")
 
 
 def _fix_pam_mindays() -> list[RollbackEntry]:
@@ -508,32 +509,18 @@ register(Control(
 # ---- CIS 5.3.7: Ensure password retry is limited ----
 
 def _check_pw_retry() -> CheckResult:
-    val = _get_pwquality("retry")
-    if val is not None:
-        if val <= 3:
-            return CheckResult("pass")
-        return CheckResult("fail", f"retry={val}, recommended: ≤ 3")
-
-    # Check PAM
-    for pam_path in ["/etc/pam.d/common-password", "/etc/pam.d/system-auth"]:
-        p = Path(pam_path)
-        if p.exists():
-            for line in p.read_text().splitlines():
-                # Skip blank and commented lines. A commented
-                # `# password requisite pam_pwquality.so retry=3` example
-                # enforces nothing, but the old substring test read it and
-                # passed 5.3.7.
-                s = line.strip()
-                if not s or s.startswith("#"):
-                    continue
-                if "pam_pwquality" in line:
-                    m = re.search(r"retry=(\d+)", line)
-                    if m and int(m.group(1)) <= 3:
-                        return CheckResult("pass")
-                    elif m:
-                        return CheckResult("fail", f"retry={m.group(1)}")
-
-    return CheckResult("warn", "retry not configured in pwquality")
+    try:
+        vals, loaded = _pwq("retry")
+    except OSError as e:
+        return CheckResult("warn", f"could not read pwquality/PAM config: {e}")
+    if not loaded:
+        return CheckResult("manual", _PWQ_NOT_LOADED)
+    bad = [w for w, v in vals if v is not None and (_pwq_int(v) is None or _pwq_int(v) > 3)]
+    if bad:
+        return CheckResult("fail", "; ".join(bad) + ", recommended: ≤ 3")
+    if any(v is None for _, v in vals):
+        return CheckResult("warn", "retry not configured in pwquality")
+    return CheckResult("pass")
 
 
 def _fix_pw_retry() -> list[RollbackEntry]:
