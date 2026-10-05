@@ -8,10 +8,12 @@
 
 from __future__ import annotations
 
+import stat
 from pathlib import Path
 
 from lss.lib.registry import Control, CheckResult, RollbackEntry, register
 from lss.lib.sshd import get_sshd_setting as _get_sshd_setting, set_sshd_setting as _set_sshd_setting, setting_in_global_scope, LSS_SSHD_CONF
+from lss.lib.sshd import audit_sshd as _audit_sshd, sshd_seconds as _sshd_seconds
 
 SSHD_CONFIG = "/etc/ssh/sshd_config"
 
@@ -19,9 +21,10 @@ SSHD_CONFIG = "/etc/ssh/sshd_config"
 # ---- CIS 5.2.5: Ensure SSH MaxAuthTries is set to 4 or less ----
 
 def _check_max_auth_tries() -> CheckResult:
-    val = _get_sshd_setting("maxauthtries")
-    if val is None:
-        return CheckResult("warn", "could not read sshd config")
+    return _audit_sshd("maxauthtries", _get_sshd_setting("maxauthtries"), _eval_max_auth_tries)
+
+
+def _eval_max_auth_tries(val: str) -> CheckResult:
     try:
         n = int(val)
     except ValueError:
@@ -47,9 +50,10 @@ register(Control(
 # ---- CIS 5.2.6: Ensure SSH IgnoreRhosts is enabled ----
 
 def _check_ignore_rhosts() -> CheckResult:
-    val = _get_sshd_setting("ignorerhosts")
-    if val is None:
-        return CheckResult("warn", "could not read sshd config")
+    return _audit_sshd("ignorerhosts", _get_sshd_setting("ignorerhosts"), _eval_ignore_rhosts)
+
+
+def _eval_ignore_rhosts(val: str) -> CheckResult:
     if val.lower() == "yes":
         return CheckResult("pass")
     return CheckResult("fail", f"IgnoreRhosts={val}")
@@ -71,16 +75,19 @@ register(Control(
 # ---- CIS 5.2.11: Ensure SSH PermitRootLogin is disabled ----
 
 def _check_permit_root() -> CheckResult:
-    val = _get_sshd_setting("permitrootlogin")
-    if val is None:
-        return CheckResult("warn", "could not read sshd config")
-    # `sshd -T` resolves Match blocks. If the effective value is correct but
-    # there's no global setting, the value only applies to the matched scope —
-    # other users may still be able to root-log-in. Surface that.
-    in_global = setting_in_global_scope("PermitRootLogin")
+    res = _audit_sshd("permitrootlogin", _get_sshd_setting("permitrootlogin"), _eval_permit_root)
+    if res.status != "pass":
+        return res
+    # The effective value is resolved for a local root login. If there's no
+    # global setting, "no" only comes from a Match block — other connections
+    # may still be able to root-log-in. Surface that.
+    if setting_in_global_scope("PermitRootLogin") is False:
+        return CheckResult("warn", "PermitRootLogin=no resolved via Match block; no global default set")
+    return res
+
+
+def _eval_permit_root(val: str) -> CheckResult:
     if val.lower() == "no":
-        if in_global is False:
-            return CheckResult("warn", "PermitRootLogin=no resolved via Match block; no global default set")
         return CheckResult("pass")
     if val.lower() == "prohibit-password":
         return CheckResult("warn", "PermitRootLogin=prohibit-password, recommended: no")
@@ -119,9 +126,10 @@ WEAK_CIPHERS = {"3des-cbc", "aes128-cbc", "aes192-cbc", "aes256-cbc", "blowfish-
 
 
 def _check_ciphers() -> CheckResult:
-    val = _get_sshd_setting("ciphers")
-    if val is None:
-        return CheckResult("warn", "could not read sshd config")
+    return _audit_sshd("ciphers", _get_sshd_setting("ciphers"), _eval_ciphers)
+
+
+def _eval_ciphers(val: str) -> CheckResult:
     active = set(val.split(","))
     weak = active & WEAK_CIPHERS
     if weak:
@@ -145,9 +153,10 @@ register(Control(
 # ---- CIS 5.2.2: Ensure SSH LogLevel is appropriate ----
 
 def _check_loglevel() -> CheckResult:
-    val = _get_sshd_setting("loglevel")
-    if val is None:
-        return CheckResult("warn", "could not read sshd config")
+    return _audit_sshd("loglevel", _get_sshd_setting("loglevel"), _eval_loglevel)
+
+
+def _eval_loglevel(val: str) -> CheckResult:
     if val.upper() in ("VERBOSE", "INFO"):
         return CheckResult("pass")
     return CheckResult("fail", f"LogLevel={val}, recommended: VERBOSE or INFO")
@@ -169,9 +178,10 @@ register(Control(
 # ---- CIS 5.2.7: Ensure SSH HostbasedAuthentication is disabled ----
 
 def _check_hostbased_auth() -> CheckResult:
-    val = _get_sshd_setting("hostbasedauthentication")
-    if val is None:
-        return CheckResult("warn", "could not read sshd config")
+    return _audit_sshd("hostbasedauthentication", _get_sshd_setting("hostbasedauthentication"), _eval_hostbased_auth)
+
+
+def _eval_hostbased_auth(val: str) -> CheckResult:
     if val.lower() == "no":
         return CheckResult("pass")
     return CheckResult("fail", f"HostbasedAuthentication={val}")
@@ -193,9 +203,10 @@ register(Control(
 # ---- CIS 5.2.8: Ensure SSH PermitEmptyPasswords is disabled ----
 
 def _check_permit_empty() -> CheckResult:
-    val = _get_sshd_setting("permitemptypasswords")
-    if val is None:
-        return CheckResult("warn", "could not read sshd config")
+    return _audit_sshd("permitemptypasswords", _get_sshd_setting("permitemptypasswords"), _eval_permit_empty)
+
+
+def _eval_permit_empty(val: str) -> CheckResult:
     if val.lower() == "no":
         return CheckResult("pass")
     return CheckResult("fail", f"PermitEmptyPasswords={val}")
@@ -217,9 +228,10 @@ register(Control(
 # ---- CIS 5.2.9: Ensure SSH PermitUserEnvironment is disabled ----
 
 def _check_permit_user_env() -> CheckResult:
-    val = _get_sshd_setting("permituserenvironment")
-    if val is None:
-        return CheckResult("warn", "could not read sshd config")
+    return _audit_sshd("permituserenvironment", _get_sshd_setting("permituserenvironment"), _eval_permit_user_env)
+
+
+def _eval_permit_user_env(val: str) -> CheckResult:
     if val.lower() == "no":
         return CheckResult("pass")
     return CheckResult("fail", f"PermitUserEnvironment={val}")
@@ -241,9 +253,10 @@ register(Control(
 # ---- CIS 5.2.4: Ensure SSH X11 forwarding is disabled ----
 
 def _check_x11() -> CheckResult:
-    val = _get_sshd_setting("x11forwarding")
-    if val is None:
-        return CheckResult("warn", "could not read sshd config")
+    return _audit_sshd("x11forwarding", _get_sshd_setting("x11forwarding"), _eval_x11)
+
+
+def _eval_x11(val: str) -> CheckResult:
     if val.lower() == "no":
         return CheckResult("pass")
     return CheckResult("fail", f"X11Forwarding={val}")
@@ -265,9 +278,10 @@ register(Control(
 # ---- CIS 5.2.3: Ensure SSH MaxStartups is configured ----
 
 def _check_max_startups() -> CheckResult:
-    val = _get_sshd_setting("maxstartups")
-    if val is None:
-        return CheckResult("warn", "could not read sshd config")
+    return _audit_sshd("maxstartups", _get_sshd_setting("maxstartups"), _eval_max_startups)
+
+
+def _eval_max_startups(val: str) -> CheckResult:
     # Default is "10:30:100" — CIS recommends "10:30:60" or stricter
     parts = val.split(":")
     if len(parts) == 3:
@@ -297,9 +311,10 @@ register(Control(
 # ---- CIS 5.2.15: Ensure SSH LoginGraceTime is set to one minute or less ----
 
 def _check_login_grace() -> CheckResult:
-    val = _get_sshd_setting("logingracetime")
-    if val is None:
-        return CheckResult("warn", "could not read sshd config")
+    return _audit_sshd("logingracetime", _get_sshd_setting("logingracetime"), _eval_login_grace)
+
+
+def _eval_login_grace(val: str) -> CheckResult:
     try:
         n = int(val)
     except ValueError:
@@ -324,23 +339,38 @@ register(Control(
 
 # ---- CIS 5.2.16: Ensure SSH Idle Timeout Interval is configured ----
 
+def _eval_client_alive(interval: str, count: str) -> CheckResult:
+    # ClientAliveCountMax 0 disables termination of unresponsive sessions
+    # (OpenSSH >= 8.2), so the count must be 1..3 as well as the interval > 0.
+    iv = _sshd_seconds(interval)
+    try:
+        cm = int(count)
+    except ValueError:
+        cm = None
+    if iv is None or cm is None:
+        return CheckResult("fail", f"ClientAliveInterval={interval}, ClientAliveCountMax={count}")
+    issues = []
+    if not 1 <= iv <= 300:
+        issues.append(f"ClientAliveInterval={iv}" + (" (disabled)" if iv == 0 else ""))
+    if not 1 <= cm <= 3:
+        issues.append(f"ClientAliveCountMax={cm}" + (" (0 disables termination)" if cm == 0 else ""))
+    if issues:
+        return CheckResult("fail", ", ".join(issues))
+    return CheckResult("pass")
+
+
 def _check_client_alive() -> CheckResult:
+    from lss.lib.sshd import match_override_result
     interval = _get_sshd_setting("clientaliveinterval")
     count = _get_sshd_setting("clientalivecountmax")
     if interval is None or count is None:
         return CheckResult("warn", "could not read sshd config")
-    try:
-        iv, cm = int(interval), int(count)
-    except ValueError:
-        return CheckResult("fail", f"ClientAliveInterval={interval}, ClientAliveCountMax={count}")
-    if 1 <= iv <= 300 and cm <= 3:
-        return CheckResult("pass")
-    issues = []
-    if iv == 0 or iv > 300:
-        issues.append(f"ClientAliveInterval={iv}")
-    if cm > 3:
-        issues.append(f"ClientAliveCountMax={cm}")
-    return CheckResult("fail", ", ".join(issues))
+    res = _eval_client_alive(interval, count)
+    if res.status != "pass":
+        return res
+    return (match_override_result("ClientAliveInterval", lambda v: _eval_client_alive(v, count))
+            or match_override_result("ClientAliveCountMax", lambda v: _eval_client_alive(interval, v))
+            or res)
 
 
 def _fix_client_alive() -> list[RollbackEntry]:
@@ -362,9 +392,10 @@ register(Control(
 # ---- CIS 5.2.17: Ensure SSH AllowTcpForwarding is disabled ----
 
 def _check_tcp_forwarding() -> CheckResult:
-    val = _get_sshd_setting("allowtcpforwarding")
-    if val is None:
-        return CheckResult("warn", "could not read sshd config")
+    return _audit_sshd("allowtcpforwarding", _get_sshd_setting("allowtcpforwarding"), _eval_tcp_forwarding)
+
+
+def _eval_tcp_forwarding(val: str) -> CheckResult:
     if val.lower() == "no":
         return CheckResult("pass")
     return CheckResult("fail", f"AllowTcpForwarding={val}")
@@ -385,20 +416,37 @@ register(Control(
 
 # ---- CIS 5.2.18: Ensure SSH warning banner is configured ----
 
+BANNER_FILE = "/etc/issue.net"
+
+
 def _check_banner() -> CheckResult:
-    val = _get_sshd_setting("banner")
-    if val is None:
-        return CheckResult("warn", "could not read sshd config")
-    if val.lower() != "none" and val.strip():
-        return CheckResult("pass")
-    return CheckResult("fail", "no SSH banner configured")
+    return _audit_sshd("banner", _get_sshd_setting("banner"), _eval_banner)
+
+
+def _eval_banner(val: str) -> CheckResult:
+    # The Banner file must exist and be a non-empty regular file; sshd sends
+    # nothing for a missing or empty one.
+    if not val.strip() or val.strip().lower() == "none":
+        return CheckResult("fail", "no SSH banner configured")
+    p = Path(val.strip())
+    try:
+        st = p.stat()
+        if not stat.S_ISREG(st.st_mode):
+            return CheckResult("fail", f"Banner {val} is not a regular file")
+        if not p.read_text(errors="replace").strip():
+            return CheckResult("fail", f"Banner file {val} is empty")
+    except FileNotFoundError:
+        return CheckResult("fail", f"Banner file {val} does not exist")
+    except OSError as e:
+        return CheckResult("warn", f"cannot read Banner file {val}: {e.strerror or e}")
+    return CheckResult("pass")
 
 
 def _fix_banner() -> list[RollbackEntry]:
-    banner_path = Path("/etc/issue.net")
+    banner_path = Path(BANNER_FILE)
     if not banner_path.exists() or not banner_path.read_text().strip():
         banner_path.write_text("Authorized uses only. All activity may be monitored and reported.\n")
-    return [_set_sshd_setting("Banner", "/etc/issue.net")]
+    return [_set_sshd_setting("Banner", BANNER_FILE)]
 
 
 register(Control(
@@ -413,9 +461,10 @@ register(Control(
 # ---- CIS 5.2.19: Ensure SSH MaxSessions is limited ----
 
 def _check_max_sessions() -> CheckResult:
-    val = _get_sshd_setting("maxsessions")
-    if val is None:
-        return CheckResult("warn", "could not read sshd config")
+    return _audit_sshd("maxsessions", _get_sshd_setting("maxsessions"), _eval_max_sessions)
+
+
+def _eval_max_sessions(val: str) -> CheckResult:
     try:
         n = int(val)
     except ValueError:
@@ -445,6 +494,9 @@ WEAK_MACS = {
     "umac-64@openssh.com", "hmac-md5-etm@openssh.com",
     "hmac-md5-96-etm@openssh.com", "hmac-ripemd160-etm@openssh.com",
     "hmac-sha1-96-etm@openssh.com", "umac-64-etm@openssh.com",
+    # CIS (Ubuntu 20.04/22.04, Debian 11) also lists SHA-1 and UMAC-128.
+    "hmac-sha1", "hmac-sha1-etm@openssh.com",
+    "umac-128@openssh.com", "umac-128-etm@openssh.com",
 }
 
 STRONG_MACS = (
@@ -454,10 +506,11 @@ STRONG_MACS = (
 
 
 def _check_macs() -> CheckResult:
-    val = _get_sshd_setting("macs")
-    if val is None:
-        return CheckResult("warn", "could not read sshd config")
-    active = set(val.split(","))
+    return _audit_sshd("macs", _get_sshd_setting("macs"), _eval_macs)
+
+
+def _eval_macs(val: str) -> CheckResult:
+    active = {m.strip().lower() for m in val.split(",")}
     weak = active & WEAK_MACS
     if weak:
         return CheckResult("fail", f"weak MACs: {','.join(sorted(weak))}")
