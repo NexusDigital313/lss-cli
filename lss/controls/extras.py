@@ -14,6 +14,7 @@ from pathlib import Path
 
 from lss.lib import distro, journal
 from lss.lib.registry import Control, CheckResult, RollbackEntry, register
+from lss.lib.sysctl import ipv6_disabled
 
 
 def _parse_ini_sections(text: str) -> dict[str, dict[str, str]]:
@@ -187,11 +188,9 @@ register(Control(
 # ---- CIS 3.2.1: Ensure IP forwarding is disabled (IPv6 specific) ----
 
 def _check_ipv6_forwarding() -> CheckResult:
-    try:
-        r = subprocess.run(["sysctl", "-n", "net.ipv6.conf.all.disable_ipv6"], capture_output=True, text=True)
-    except FileNotFoundError:
-        return CheckResult("warn", "sysctl not available — cannot verify IPv6 forwarding")
-    if r.stdout.strip() == "1":
+    # all.disable_ipv6 = 1 alone does not disable IPv6 on an interface that
+    # was re-enabled afterwards or created later; ipv6_disabled() checks them all.
+    if ipv6_disabled():
         return CheckResult("pass", "IPv6 is disabled")
     try:
         r2 = subprocess.run(["sysctl", "-n", "net.ipv6.conf.all.forwarding"], capture_output=True, text=True)
@@ -203,9 +202,9 @@ def _check_ipv6_forwarding() -> CheckResult:
 
 
 def _fix_ipv6_forwarding() -> list[RollbackEntry]:
-    from lss.lib.sysctl import set_sysctl, get_sysctl
+    from lss.lib.sysctl import set_sysctl
     # If IPv6 is disabled the check already passes — no-op.
-    if get_sysctl("net.ipv6.conf.all.disable_ipv6") == "1":
+    if ipv6_disabled():
         return []
     return [set_sysctl("net.ipv6.conf.all.forwarding", "0")]
 

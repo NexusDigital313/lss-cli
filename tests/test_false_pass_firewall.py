@@ -119,7 +119,7 @@ def test_unused_interfaces_failed_ip_is_not_a_pass(monkeypatch):
 def firewall_rules(monkeypatch):
     """Serve `iptables -S` / `ip6tables -S` text to the checks under test."""
     monkeypatch.setattr(firewall, "_cmd_exists", lambda name: True)
-    monkeypatch.setattr(firewall, "_ipv6_disabled", lambda: False)
+    monkeypatch.setattr(firewall, "ipv6_disabled", lambda: False)
 
     def serve(text: str) -> None:
         monkeypatch.setattr(firewall, "_iptables_rules", lambda: text)
@@ -180,7 +180,7 @@ def test_ip6tables_loopback_matches_ipv4_semantics(firewall_rules, rules, expect
 
 def _fake_ss(monkeypatch, ports):
     out = "".join(
-        f'LISTEN 0 128 0.0.0.0:{p} 0.0.0.0:* users:(("svc",pid=1,fd=3))\n' for p in ports
+        f'tcp LISTEN 0 128 0.0.0.0:{p} 0.0.0.0:* users:(("svc",pid=1,fd=3))\n' for p in ports
     )
 
     def fake_run(argv, *args, **kwargs):

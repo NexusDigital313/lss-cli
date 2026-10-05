@@ -124,6 +124,9 @@ def _gdm_with_files(monkeypatch, mapping):
     real /etc never leaks in.
     """
     monkeypatch.setattr(gdm, "_gdm_installed", lambda: True)
+    # The dconf profile / compiled-db requirement is pinned in
+    # test_false_pass_r2_gdmfw.py; these tests cover the keyfile logic.
+    monkeypatch.setattr(gdm, "_local_db_problem", lambda: None)
     real_Path = pathlib.Path
     monkeypatch.setattr(gdm, "Path", lambda p: real_Path(mapping.get(str(p), p)))
 
