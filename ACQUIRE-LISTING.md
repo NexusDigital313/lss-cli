@@ -20,11 +20,11 @@ compares" for the full table.
 
 | Category | Contents |
 |---|---|
-| **Source code** | `lss-1.0.0/lss/` — Python 3.10+ codebase, ~7,500 lines, no third-party runtime deps beyond `rich` for terminal output. |
-| **Test suite** | `lss-1.0.0/tests/` — 1,024 passing unit tests + 23 platform-skipped, parameterized per-control coverage. |
+| **Source code** | `lss-1.0.1/lss/` — Python 3.10+ codebase, ~7,500 lines, no third-party runtime deps beyond `rich` for terminal output. |
+| **Test suite** | `lss-1.0.1/tests/` — 1,024 passing unit tests + 23 platform-skipped, parameterized per-control coverage. |
 | **Pre-launch test plan** | `PRE_LAUNCH_TEST_PLAN.md` — operator-facing QA checklist for shipping releases. |
 | **Sample output** | `examples/sample-audit-report.html` — real audit report, opens in any browser. |
-| **Build artifacts** | `lss-1.0.0-py3-none-any.whl`, `lss-1.0.0.tar.gz`, `SHA256SUMS`. |
+| **Build artifacts** | `lss-1.0.1-py3-none-any.whl`, `lss-1.0.1.tar.gz`, `SHA256SUMS`. |
 | **Documentation** | `README.md`, `CHANGELOG.md`, `CONTRIBUTING.md`, `LICENSE`. |
 | **License scaffolding** | `lss/lib/license.py` — license-key gate stub. Default returns valid (no enforcement); buyer wires the body of `check_license` to their preferred provider (Paddle / Stripe Billing / Lemon Squeezy / custom HTTP endpoint), or removes the gate entirely. |
 
@@ -60,9 +60,9 @@ compares" for the full table.
 
 - Python 3.10+, single dependency at runtime (`rich` for terminal output).
 - Standard-library `subprocess`, `pathlib`, `urllib`, `json` for everything else.
-- Distribution as a single wheel; install with `pip install lss-1.0.0-py3-none-any.whl`.
+- Distribution as a single wheel; install with `pip install lss-1.0.1-py3-none-any.whl`.
 - Journal format is JSON (per-run files under `/var/log/lss/journal/`),
-  v1.0.0-compatible with v0.5.x journals.
+  v1.0.1-compatible with v0.5.x journals.
 
 ## Target market
 
@@ -80,7 +80,7 @@ official content, served by OpenSCAP/InSpec) or DISA-STIG environments.
 
 ## Maturity / current state
 
-- Version 1.0.0 (latest), shipped 2026-04-30.
+- Version 1.0.1 (latest), shipped 2026-06-25 — IPv6-lockout + journal-durability + sshd-reload safety fixes and a streaming audit UX; 1.0.0 shipped 2026-04-30.
 - Customer-facing bugs surfaced by the pre-launch test plan were closed
   across the 0.5.x series; the 0.5.2 fix-set added byte-identical
   state-restore regression tests to lock the rollback-correctness guarantee

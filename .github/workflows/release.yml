@@ -11,7 +11,7 @@ name: Release (build + cosign-sign + checksum)
 #         cosign verify-blob \
 #           --certificate lss-X.Y.Z-py3-none-any.whl.crt \
 #           --signature lss-X.Y.Z-py3-none-any.whl.sig \
-#           --certificate-identity-regexp "https://github.com/<owner>/lss/.github/workflows/release.yml@.*" \
+#           --certificate-identity-regexp "https://github.com/NexusDigital313/lss-cli/.github/workflows/release.yml@.*" \
 #           --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
 #           lss-X.Y.Z-py3-none-any.whl
 

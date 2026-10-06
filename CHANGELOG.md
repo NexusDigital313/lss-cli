@@ -54,6 +54,46 @@ Safety and UX overhaul across all control modules (+1,351 / −434 lines, 1047 t
 
 - `build.sh` — one command produces the wheel, sdist, and `SHA256SUMS` in `dist/` (builds in a throwaway venv; no wheel is checked into the repo).
 - Install docs rewritten to cover build-from-source vs. release-bundle paths.
+## [1.0.1] — 2026-06-25
+
+Safety hardening of the harden/rollback path, plus a redesigned audit experience.
+No change to the control set; auto-fix count is 166 (was 167) because the IPv6
+default-deny control is now audit-only — see below.
+
+### Fixed (lockout / data-loss safety)
+
+- **IPv6 firewall lockout (3.5.3.1).** `ip6tables` default-deny was auto-applied
+  while its IPv4 twin (3.5.2.1) was deliberately audit-only. Setting INPUT/FORWARD
+  to DROP before the loopback / ESTABLISHED / SSH allow-rules (which sort after it)
+  could sever an IPv6 SSH session mid-harden. `3.5.3.1` is now `fix=None` and its
+  check returns `manual`, mirroring `3.5.2.1`. **Auto-fix count 167 → 166.**
+- **Rollback journal could be lost on a hard stop.** The journal was written only at
+  the end of a run, so a `SIGKILL`/OOM/power loss or `Ctrl-C` during a non-interactive
+  `--confirm` lost the rollback record for every change already applied. The journal is
+  now flushed incrementally after each control, and the non-interactive loop is guarded
+  with `KeyboardInterrupt` → save partial journal and exit 130.
+- **Rollback now reloads sshd.** Reverting an `/etc/ssh/*` file restored it on disk but
+  left the running daemon enforcing the hardened settings until a manual reload. Rollback
+  now reloads sshd after restoring any SSH config so the revert takes effect immediately.
+
+### Changed (audit UX)
+
+- `lss audit` now **fades in the wordmark and streams each control's result live**, grouped
+  under section headers, instead of hiding the scan behind a transient progress bar. Set
+  `LSS_NO_ANIM=1` (or pipe to a non-TTY / use `--json`) to disable the animation.
+
+### Added (licensing)
+
+- **Real license enforcement** via Lemon Squeezy. The free tier — `audit`, `report`, `list`,
+  and `harden --dry-run` (preview) — is never gated. Applying changes (`harden --confirm`)
+  requires a valid, activated license key. **`rollback` is deliberately free**: the undo path
+  must never be withheld, or a lapsed license could trap a host in a hardened state.
+- New `lss license activate <KEY>` / `lss license status` / `lss license deactivate`.
+  Activation makes one online call, then caches to `/etc/lss/license.json` (or `~/.config/lss/`)
+  so the binary keeps working offline — re-validates online every 14 days when reachable, and
+  honors the cached validation for up to 90 days fully offline.
+- Enforcement is on by default; `LSS_ENFORCE_LICENSE=0` disables it for self-hosting / dev.
+  Key resolution order: `--license-key` → `LSS_LICENSE_KEY` → `/etc/lss/license.key`.
 
 ## [1.0.0] — 2026-04-30
 

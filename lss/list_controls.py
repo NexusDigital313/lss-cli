@@ -1,16 +1,18 @@
 # Copyright (c) 2026 Jacob Douglas Parmenter. All Rights Reserved.
 # Proprietary and Confidential.
 #
-# Unauthorized copying, modification, distribution, or use of this file, 
+# Unauthorized copying, modification, distribution, or use of this file,
 # via any medium, is strictly prohibited without explicit written authorization.
 
-"""List all registered controls in a readable format."""
+"""List all registered controls — streamed by section, matching the audit flow."""
 
 from __future__ import annotations
 
-from lss.lib.output import BOLD, RESET, DIM, CYAN, GREEN, YELLOW, RED, rule, section_header
+import os
+import time
+
+from lss.lib.output import console, section_header, _SECTION_LABELS
 from lss.lib.registry import get_controls
-from lss.lib.output import _SECTION_LABELS
 
 # Import all controls so they register
 import lss.controls.filesystem        # noqa: F401
@@ -36,44 +38,39 @@ import lss.controls.extras            # noqa: F401
 
 
 def run_list() -> int:
-    """Print all controls grouped by section."""
+    """Stream every control grouped under colored section headers — the same
+    visual language as `lss audit`. Cascades on a TTY; instant when piped.
+    """
     controls = get_controls()
+    fixable = sum(1 for c in controls if c.fix is not None)
+    audit_only = len(controls) - fixable
 
-    print()
-    rule()
-    print(f"  {BOLD}All CIS Benchmark Controls{RESET}   {DIM}({len(controls)} total){RESET}")
-    rule()
+    animate = console.is_terminal and not os.environ.get("LSS_NO_ANIM")
+    order = {s: i for i, s in enumerate(_SECTION_LABELS)}
+    ordered = sorted(controls, key=lambda c: (order.get(c.section, len(order)), c.id))
 
-    current_section = ""
-    seen_sections: set[str] = set()
-    fixable = 0
-    audit_only = 0
+    console.print()
+    console.print(f"  [bold grey93]All CIS-aligned controls[/]   "
+                  f"[grey50]({len(controls)} · {fixable} auto-fix · {audit_only} audit-only)[/]")
 
-    for ctrl in controls:
-        if ctrl.section != current_section:
-            current_section = ctrl.section
-            if current_section not in seen_sections:
-                seen_sections.add(current_section)
-                label = _SECTION_LABELS.get(current_section, current_section.title())
-                print(f"\n  {CYAN}{BOLD}┌ {label}{RESET}")
-
-        has_fix = ctrl.fix is not None
-        if has_fix:
-            fixable += 1
-            fix_tag = f"{GREEN}[auto-fix]{RESET}"
+    last = None
+    for ctrl in ordered:
+        if ctrl.section != last:
+            if last is not None and animate:
+                time.sleep(0.12)
+            section_header(ctrl.section)
+            last = ctrl.section
+        if ctrl.fix is not None:
+            mark, idc, tag = "[spring_green3]●[/]", "spring_green3", "[spring_green3]auto-fix[/]"
         else:
-            audit_only += 1
-            fix_tag = f"{DIM}[audit-only]{RESET}"
+            mark, idc, tag = "[grey42]○[/]", "grey58", "[grey42]audit-only[/]"
+        console.print(f"  {mark} [{idc} bold]{ctrl.id:<9s}[/] [grey74]{ctrl.title}[/]   {tag}")
+        if animate:
+            time.sleep(0.016)
 
-        print(f"    {BOLD}{ctrl.id:<10s}{RESET} {ctrl.title}  {fix_tag}")
-
-    print()
-    rule()
-    print(
-        f"  {BOLD}{len(controls)}{RESET} controls   "
-        f"{GREEN}{fixable} auto-fixable{RESET}   "
-        f"{DIM}{audit_only} audit-only{RESET}"
-    )
-    print()
-
+    console.print()
+    console.print(f"  [bold]{len(controls)}[/] controls   "
+                  f"[spring_green3]{fixable} auto-fixable[/]   "
+                  f"[grey50]{audit_only} audit-only[/]")
+    console.print()
     return 0

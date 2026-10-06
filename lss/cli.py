@@ -10,7 +10,7 @@ import argparse
 import sys
 
 from lss import __version__
-from lss.lib.output import RESET, BLUE, CYAN, BOLD, DIM, YELLOW, GREEN, RED, err
+from lss.lib.output import RESET, BLUE, CYAN, BOLD, DIM, YELLOW, GREEN, RED, err, info
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -98,11 +98,20 @@ def build_parser() -> argparse.ArgumentParser:
     # --- help-all ---
     sub.add_parser("help-all", help="show all commands with full descriptions and consequences")
 
+    # --- license ---
+    lic = sub.add_parser("license", help="activate / check / remove your LSS license (needed for harden + rollback)")
+    lic_sub = lic.add_subparsers(dest="license_cmd")
+    lic_act = lic_sub.add_parser("activate", help="activate a license key on this host")
+    lic_act.add_argument("key", metavar="KEY", help="your LSS license key (from your purchase email)")
+    lic_sub.add_parser("status", help="show this host's license status")
+    lic_sub.add_parser("deactivate", help="release this host's activation (frees a seat)")
+
     return p
 
 
 def banner():
-    print(f"{BOLD}{BLUE}  ▸ Linux Security Suite{RESET} v{__version__}")
+    from lss.lib.output import print_banner_art
+    print_banner_art()
 
 
 def _print_help_all():
@@ -112,7 +121,7 @@ def _print_help_all():
 {BOLD}{CYAN}COMMANDS{RESET}
 
 {BOLD}  lss audit{RESET}
-    What it does:   Scans your system against 204 CIS Benchmark security controls.
+    What it does:   Scans your system against 206 CIS Benchmark security controls.
                     Checks things like firewall rules, SSH settings, password policies,
                     file permissions, running services, and kernel hardening.
     Changes made:   {BOLD}None.{RESET} This is completely read-only. Nothing is modified.
@@ -192,6 +201,15 @@ def _print_help_all():
     Changes made:   {BOLD}None.{RESET} Just prints a list.
     When to use:    When you want to see everything LSS checks for.
 
+{BOLD}  lss license{RESET} {DIM}activate <KEY> | status | deactivate{RESET}
+    What it does:   Manages your paid license. {BOLD}audit{RESET}, {BOLD}report{RESET}, {BOLD}list{RESET}, and
+                    {BOLD}harden --dry-run{RESET} are free; applying changes with
+                    {BOLD}harden --confirm{RESET} needs an activated key. {BOLD}rollback{RESET} is
+                    always free — undo is never withheld.
+    Activate once:  {BOLD}sudo lss license activate <YOUR-KEY>{RESET}  (one online check, then
+                    cached — works offline afterward).
+    Changes made:   {BOLD}None{RESET} to the system; writes the license cache to /etc/lss/.
+
 {BOLD}{CYAN}GLOBAL OPTIONS{RESET}
 
     --no-color      Turn off colored output (for piping to files or scripts).
@@ -224,6 +242,28 @@ def _print_help_all():
 
 
 
+def _run_license(args) -> int:
+    """Handle `lss license activate|status|deactivate`."""
+    from lss.lib import license as lic
+    sub = getattr(args, "license_cmd", None)
+    if sub == "activate":
+        st = lic.activate(args.key)
+    elif sub == "deactivate":
+        st = lic.deactivate()
+    else:  # default: status
+        st = lic.status()
+
+    if st.valid:
+        bits = [b for b in (st.product, st.purchase_email, st.key_masked) if b]
+        suffix = ("  (" + " · ".join(bits) + ")") if bits else ""
+        info(f"{st.detail}{suffix}")
+        return 0
+    err(f"license: {st.detail}")
+    if sub != "deactivate":
+        info("Activate with:  sudo lss license activate <YOUR-KEY>")
+    return 1
+
+
 def main(argv: list[str] | None = None):
     parser = build_parser()
     args = parser.parse_args(argv)
@@ -247,6 +287,11 @@ def main(argv: list[str] | None = None):
         banner()
         sys.exit(run_list())
 
+    # license management doesn't need root (cache falls back to ~/.config/lss)
+    if args.command == "license":
+        banner()
+        sys.exit(_run_license(args))
+
     # Everything else needs root
     import os
     if os.geteuid() != 0:
@@ -254,17 +299,25 @@ def main(argv: list[str] | None = None):
         sys.exit(1)
 
     # Banner is decorative — suppress in --json so stdout stays parseable.
-    if not getattr(args, "json", False):
+    # audit renders its own animated banner inside run_audit (banner_fade);
+    # everything else gets the static ASCII wordmark via banner().
+    if not getattr(args, "json", False) and args.command != "audit":
         banner()
 
-    # License gate — applies to every mutating command. The default stub in
-    # lss/lib/license.py is permissive (returns valid=True). Wire it to a
-    # license-verify provider to enforce.
-    if args.command in ("harden", "rollback", "report"):
+    # License gate — only applying hardening (`harden --confirm`) is paid.
+    # Free, by design: `audit`, `report`, `list`, `harden --dry-run` (preview),
+    # and `rollback` — rollback is the safety net and must never be withheld, or
+    # a lapsed license could trap a box in a hardened state. Enforcement is on by
+    # default; a valid Lemon Squeezy key (or LSS_ENFORCE_LICENSE=0) satisfies it.
+    if args.command == "harden" and not getattr(args, "dry_run", False):
         from lss.lib.license import check_license
-        status = check_license(getattr(args, "license_key", None))
-        if not status.valid:
-            err(f"license check failed: {status.detail}")
+        lic_status = check_license(getattr(args, "license_key", None))
+        if not lic_status.valid:
+            err(f"applying hardening requires a license — {lic_status.detail}")
+            info("Preview for free:    sudo lss harden --dry-run")
+            info("Buy a license, then: sudo lss license activate <YOUR-KEY>")
+            info("Already activated?   sudo lss license status")
+            info("Self-hosting / dev?  set LSS_ENFORCE_LICENSE=0")
             sys.exit(2)
 
     if args.command == "audit":

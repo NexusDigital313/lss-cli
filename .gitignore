@@ -40,3 +40,5 @@ cosign.pub
 /var/log/lss/
 audit-*.json
 report-*.html
+dist-paid/
+.pyarmor/

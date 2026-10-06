@@ -1,10 +1,16 @@
 # Copyright (c) 2026 Jacob Douglas Parmenter. All Rights Reserved.
 # Proprietary and Confidential.
 #
-# Unauthorized copying, modification, distribution, or use of this file, 
+# Unauthorized copying, modification, distribution, or use of this file,
 # via any medium, is strictly prohibited without explicit written authorization.
 
-"""Rich terminal output for the Linux Security Suite."""
+"""Rich terminal output for the Linux Security Suite.
+
+Theme matches the LSS launch/social cards: a dark acid-green terminal
+aesthetic — green #00d75f / #3df58a primary, cyan #58d1eb secondary,
+gold/amber for warnings, with `>_` lockup and [*]/[+]/[!]/[x] log markers.
+Only presentation lives here; audit/harden/rollback behavior is unchanged.
+"""
 
 import os
 import sys
@@ -25,6 +31,22 @@ from rich import box
 # Global console — shared everywhere
 console = Console(highlight=False)
 err_console = Console(highlight=False, file=sys.stderr)
+
+# ---------------------------------------------------------------------------
+# Card-matched palette (the X / launch banners). Truecolor hex — rich renders
+# these directly; they degrade gracefully on 256-color terminals.
+# ---------------------------------------------------------------------------
+C_GREEN   = "#00d75f"   # primary acid green
+C_GREEN_B = "#3df58a"   # bright green (glow / verdict)
+C_CYAN    = "#58d1eb"   # secondary
+C_GOLD    = "#ffd700"   # highlight
+C_AMBER   = "#ffaf00"   # warning / manual
+C_RED     = "#ff5f57"   # fail
+C_TEXT    = "#e8edf2"   # bright text
+C_MUTE    = "#c5c8c6"   # body text
+C_DIM     = "#808080"   # dim
+C_FAINT   = "#5a6066"   # fainter
+C_LINE    = "#1c2530"   # hairlines / borders
 
 # Legacy color vars (used by cli.py help-all and other places)
 _use_color = console.is_terminal
@@ -75,75 +97,85 @@ _SECTION_LABELS = {
     "users":      "User Accounts & Groups",
 }
 
+# Disciplined on-brand cycle (green / cyan / bright-green / gold) instead of a
+# scattered rainbow — keeps the scan reading as one designed surface.
 _SECTION_STYLES = [
-    "bright_cyan", "dodger_blue2", "spring_green3", "dark_sea_green",
-    "medium_purple1", "dark_orange", "gold1", "hot_pink",
-    "bright_cyan", "dodger_blue2", "spring_green3",
+    C_GREEN, C_CYAN, C_GREEN_B, C_GOLD,
+    C_GREEN, C_CYAN, C_GREEN_B, C_GOLD,
+    C_GREEN, C_CYAN, C_GREEN_B,
 ]
 _section_idx = 0
 
 
 # ---------------------------------------------------------------------------
-# Banner
+# Banner — the `>_` LSS lockup from the cards
 # ---------------------------------------------------------------------------
+def _banner_line(accent, dim):
+    """One frame of the wordmark: a green accent rail + `>_` mark, the LSS
+    lockup, and the spelled-out suite name, with the version right-aligned."""
+    from lss import __version__
+    grid = Table.grid(expand=True, padding=(0, 0))
+    grid.add_column(justify="left")
+    grid.add_column(justify="right")
+
+    left = Text()
+    left.append("  ▌ ", style=f"bold {accent}")
+    left.append(">_", style=f"bold {accent}")
+    left.append("   ", style=accent)
+    left.append("LSS", style=f"bold {C_TEXT}")
+    left.append("\n  ▌      ", style=f"bold {accent}")
+    left.append("LINUX SECURITY SUITE", style=dim)
+
+    ver = Text(f"v{__version__}  ", style=dim)
+    grid.add_row(left, ver)
+    return grid
+
+
 def print_banner_art():
-    """Slim, professional one-line wordmark — no ASCII art, no logo splash.
-
-    A tool that modifies sshd/PAM/the firewall should read as sober and
-    competent, not as a hacker toy. One branded line, then get to work.
-    """
-    from lss import __version__
-    head = Table.grid(expand=True)
-    head.add_column(justify="left")
-    head.add_column(justify="right")
-    left = Text()
-    left.append(" lss ", style="bold black on bright_cyan")
-    left.append("  Linux Security Suite", style="bold grey85")
-    head.add_row(left, Text(f"v{__version__}", style="grey50"))
+    """Static one-shot lockup (non-animated / non-TTY)."""
     console.print()
-    console.print(head)
-    console.print(Rule(style="grey30"))
+    console.print(_banner_line(C_GREEN_B, C_DIM))
+    console.print(Rule(style=C_GREEN))
 
 
-def _banner_head(title_style: str, chip_bg: str, ver_style: str):
-    """One frame of the wordmark, parameterised by style for the fade ramp."""
-    from lss import __version__
-    head = Table.grid(expand=True)
-    head.add_column(justify="left")
-    head.add_column(justify="right")
-    left = Text()
-    left.append(" lss ", style=f"bold black on {chip_bg}")
-    left.append("  Linux Security Suite", style=f"bold {title_style}")
-    head.add_row(left, Text(f"v{__version__}", style=ver_style))
-    return head
-
-
-def banner_fade(subtitle: str | None = None):
-    """Elegant fade-in wordmark: ramp the title brightness and let the cyan
-    chip emerge from the background over ~0.35s. Falls back to the static
-    banner on a non-TTY (recordings, pipes, CI) so output stays clean.
-    """
+def banner_fade(subtitle=None):
+    """Fade the lockup in with a dark→acid green brightness ramp."""
     if not console.is_terminal:
         print_banner_art()
         if subtitle:
-            console.print(f"  [grey50]{subtitle}[/]")
+            console.print(f"  [{C_DIM}]{subtitle}[/]")
             console.print()
         return
-
     import time
-    title_ramp = ["grey11", "grey19", "grey30", "grey42", "grey58", "grey74", "grey85"]
-    chip_ramp  = ["grey15", "grey23", "grey35", "deep_sky_blue4", "dodger_blue2", "cyan", "bright_cyan"]
-    ver_ramp   = ["grey11", "grey15", "grey23", "grey30", "grey37", "grey42", "grey50"]
-
+    ramp = ["#0e3a22", "#11633a", "#1a8f50", "#2bbf6e", "#34e07e", "#3df58a"]
     console.print()
     with Live(console=console, refresh_per_second=30, transient=False) as live:
-        for i in range(len(title_ramp)):
-            live.update(_banner_head(title_ramp[i], chip_ramp[i], ver_ramp[i]))
-            time.sleep(0.05)
-    console.print(Rule(style="grey30"))
+        for style in ramp:
+            live.update(_banner_line(style, "#3a4048"))
+            time.sleep(0.08)
+    console.print(Rule(style=C_GREEN))
     if subtitle:
-        console.print(f"  [grey50]{subtitle}[/]")
+        console.print(f"  [{C_CYAN}]{subtitle}[/]")
         console.print()
+
+
+# ---------------------------------------------------------------------------
+# Marker legend — Prowler-style one-line key so the status tags read instantly
+# ---------------------------------------------------------------------------
+def print_legend():
+    t = Text("  ")
+    t.append("key  ", style=C_FAINT)
+    for marker, mstyle, label in (
+        ("[+]", C_GREEN_B, "pass"),
+        ("[x]", C_RED, "fixable"),
+        ("[!]", C_AMBER, "warn"),
+        ("[~]", C_GOLD, "manual"),
+        ("[-]", C_DIM, "n/a"),
+    ):
+        t.append(f"{marker} ", style=f"bold {mstyle}")
+        t.append(f"{label}   ", style=C_MUTE)
+    console.print(t)
+    console.print()
 
 
 # ---------------------------------------------------------------------------
@@ -151,17 +183,18 @@ def banner_fade(subtitle: str | None = None):
 # ---------------------------------------------------------------------------
 def print_host_info(host_name: str, hostname: str, kernel: str, uptime: str, control_count: int):
     grid = Table.grid(padding=(0, 3))
-    grid.add_column(style="grey50", justify="right")
+    grid.add_column(style=C_DIM, justify="right")
     grid.add_column()
 
-    grid.add_row("Profile", f"[bold bright_cyan]CIS {host_name}[/]")
-    grid.add_row("Host", f"[bold dodger_blue2]{hostname}[/]")
-    grid.add_row("Kernel", f"[grey70]{kernel}[/]")
-    grid.add_row("Uptime", f"[grey70]{uptime}[/]")
-    grid.add_row("Controls", f"[bold spring_green3]{control_count}[/] [grey70]loaded[/]")
-    grid.add_row("Mode", "[bright_cyan]read-only[/] [grey50]— no changes will be made[/]")
+    grid.add_row("Profile", f"[bold {C_CYAN}]CIS {host_name}[/]")
+    grid.add_row("Host", f"[bold {C_GREEN_B}]{hostname}[/]")
+    grid.add_row("Kernel", f"[{C_MUTE}]{kernel}[/]")
+    grid.add_row("Uptime", f"[{C_MUTE}]{uptime}[/]")
+    grid.add_row("Controls", f"[bold {C_GREEN}]{control_count}[/] [{C_MUTE}]loaded[/]")
+    grid.add_row("Mode", f"[{C_CYAN}]audit (read-only)[/] [{C_DIM}]— no changes will be made[/]")
 
-    console.print(Panel(grid, border_style="blue", title="[bold]System Info[/]", title_align="left"))
+    console.print(Panel(grid, border_style=C_GREEN, title=f"[bold {C_TEXT}]System Info[/]",
+                        title_align="left", box=box.ROUNDED, padding=(0, 1)))
 
 
 # ---------------------------------------------------------------------------
@@ -181,29 +214,26 @@ def section_footer():
 
 
 # ---------------------------------------------------------------------------
-# Control result formatting
+# Control result formatting — bracketed log markers, card palette
 # ---------------------------------------------------------------------------
-def print_result(control_id: str, title: str, status: str, detail: str = ""):
-    if status == "pass":
-        sym = "[spring_green3]  ✓[/]"
-        id_style = "spring_green3"
-    elif status == "warn":
-        sym = "[dark_orange]  ▲[/]"
-        id_style = "dark_orange"
-    elif status == "manual":
-        sym = "[gold1]  ◐[/]"
-        id_style = "gold1"
-    elif status == "skip":
-        sym = "[grey50]  -[/]"
-        id_style = "grey50"
-    else:
-        sym = "[red1]  ✗[/]"
-        id_style = "red1"
+_RESULT_MARKERS = {
+    "pass":   ("[+]", C_GREEN_B),
+    "warn":   ("[!]", C_AMBER),
+    "manual": ("[~]", C_GOLD),
+    "skip":   ("[-]", C_DIM),
+    "fail":   ("[x]", C_RED),
+}
 
-    line = f"{sym} [{id_style} bold]{control_id:<8s}[/] [grey70]{title}[/]"
+
+def print_result(control_id: str, title: str, status: str, detail: str = ""):
+    marker, mstyle = _RESULT_MARKERS.get(status, _RESULT_MARKERS["fail"])
+    t = Text("  ")
+    t.append(f"{marker} ", style=f"bold {mstyle}")
+    t.append(f"{control_id:<8s} ", style=f"bold {mstyle}")
+    t.append(title, style=C_MUTE)
     if detail:
-        line += f"   [grey50]({detail})[/]"
-    console.print(line)
+        t.append(f"   ({detail})", style=C_DIM)
+    console.print(t)
 
 
 def stream_scan(checkable, check_fn):
@@ -228,13 +258,13 @@ def stream_scan(checkable, check_fn):
     for ctrl in ordered:
         if ctrl.section != last_section:
             if last_section is not None and animate:
-                time.sleep(0.05)
+                time.sleep(0.12)
             section_header(ctrl.section)
             last_section = ctrl.section
         status, detail = check_fn(ctrl)
         print_result(ctrl.id, ctrl.title, status, detail)
         if animate:
-            time.sleep(0.007)
+            time.sleep(0.016)
     console.print()
 
 
@@ -245,16 +275,16 @@ def _bar(frac: float, width: int, style: str) -> Text:
     f = max(0, min(width, round(frac * width)))
     bar = Text()
     bar.append("█" * f, style=style)
-    bar.append("░" * (width - f), style="grey35")
+    bar.append("░" * (width - f), style=C_LINE)
     return bar
 
 
 def _verdict(score: int) -> tuple[str, str]:
     if score >= 90:
-        return "HARDENED", "spring_green3"
+        return "HARDENED", C_GREEN_B
     if score >= 70:
-        return "NEEDS WORK", "gold1"
-    return "AT RISK", "red1"
+        return "NEEDS WORK", C_GOLD
+    return "AT RISK", C_RED
 
 
 # ---------------------------------------------------------------------------
@@ -276,8 +306,8 @@ def print_summary(passes: int, warns: int, fails: int, skips: int = 0,
     head.add_column(justify="left")
     head.add_column(justify="right")
     ctx = f"{hostname} · {host_label}" if hostname else host_label
-    head.add_row(Text("  SECURITY POSTURE", style="bold grey70"),
-                 Text(f"{ctx}  ", style="grey50"))
+    head.add_row(Text("  SECURITY POSTURE", style=f"bold {C_TEXT}"),
+                 Text(f"{ctx}  ", style=C_DIM))
     console.print(head)
     console.print()
 
@@ -287,22 +317,22 @@ def print_summary(passes: int, warns: int, fails: int, skips: int = 0,
     score.append(f"   {verdict}", style=f"bold {vstyle}")
     console.print(score)
     console.print(
-        Text("  hardened", style="grey50"),
-        Text(f"   ·   {compliance}% full compliance (incl. manual review)", style="grey42"),
+        Text("  hardened", style=C_DIM),
+        Text(f"   ·   {compliance}% full compliance (incl. manual review)", style=C_FAINT),
     )
     console.print()
 
     tiles = Text("  ")
     for label, n, style, sym in (
-        ("pass", passes, "spring_green3", "✔"),
-        ("warn", warns, "gold1", "▲"),
-        ("fail", fails, "red1", "✘"),
-        ("manual", manuals, "orange1", "◐"),
-        ("skip", skips, "grey50", "·"),
+        ("pass", passes, C_GREEN_B, "✔"),
+        ("warn", warns, C_AMBER, "▲"),
+        ("fail", fails, C_RED, "✘"),
+        ("manual", manuals, C_GOLD, "◐"),
+        ("skip", skips, C_DIM, "·"),
     ):
         tiles.append(f"{sym} ", style=style)
         tiles.append(f"{n} ", style=f"bold {style}")
-        tiles.append(f"{label}    ", style="grey54")
+        tiles.append(f"{label}    ", style=C_MUTE)
     console.print(tiles)
     console.print()
 
@@ -325,14 +355,14 @@ def print_section_breakdown(results: list[dict]):
              if s not in order and agg[s][1] > 0]
     if not rows:
         return
-    console.print(Text("  BY SECTION", style="bold grey70"))
+    console.print(Text("  BY SECTION", style=f"bold {C_TEXT}"))
     grid = Table.grid(padding=(0, 2))
-    grid.add_column(justify="left", style="grey70", min_width=24)
+    grid.add_column(justify="left", style=C_MUTE, min_width=24)
     grid.add_column()
-    grid.add_column(justify="right", style="grey58")
+    grid.add_column(justify="right", style=C_FAINT)
     for sec, p, t in rows:
         frac = p / t if t else 0
-        style = "spring_green3" if frac >= 0.9 else "gold1" if frac >= 0.6 else "red1"
+        style = C_GREEN_B if frac >= 0.9 else C_GOLD if frac >= 0.6 else C_RED
         grid.add_row(f"  {_SECTION_LABELS.get(sec, sec.title())}",
                      _bar(frac, 18, style), f"{p}/{t}")
     console.print(grid)
@@ -344,19 +374,20 @@ def print_section_breakdown(results: list[dict]):
 # ---------------------------------------------------------------------------
 def print_next_steps(fails: int, manuals: int, report_uri: str = ""):
     nxt = Table.grid(padding=(0, 2))
-    nxt.add_column(style="bright_cyan", min_width=30)
-    nxt.add_column(style="grey54")
+    nxt.add_column(min_width=30)
+    nxt.add_column(style=C_FAINT)
     if fails:
-        nxt.add_row(Text(" sudo lss harden --confirm", style="bold bright_cyan"),
-                    f"apply {fails} fixes · every change is reversible")
-        nxt.add_row(Text(" sudo lss harden --dry-run", style="bright_cyan"),
+        cmd = Text(" sudo lss harden ", style=f"bold {C_GREEN_B}")
+        cmd.append("--confirm", style=f"bold {C_AMBER}")
+        nxt.add_row(cmd, f"apply {fails} fixes · every change is reversible")
+        nxt.add_row(Text(" sudo lss harden --dry-run", style=C_CYAN),
                     "preview the plan, change nothing")
-    nxt.add_row(Text(" sudo lss rollback --last", style="bright_cyan"),
+    nxt.add_row(Text(" sudo lss rollback --last", style=C_CYAN),
                 "undo the last harden run instantly")
-    console.print(Panel(nxt, title="[bold grey85]NEXT[/]", title_align="left",
-                        border_style="grey30", box=box.ROUNDED, padding=(1, 2)))
+    console.print(Panel(nxt, title=f"[bold {C_TEXT}]NEXT[/]", title_align="left",
+                        border_style=C_GREEN, box=box.ROUNDED, padding=(1, 2)))
     if report_uri:
-        console.print(Text(f"  report → {report_uri}", style="grey50"))
+        console.print(Text(f"  report → {report_uri}", style=C_DIM))
     console.print()
 
 
@@ -365,12 +396,12 @@ def print_next_steps(fails: int, manuals: int, report_uri: str = ""):
 # ---------------------------------------------------------------------------
 def audit_progress() -> Progress:
     return Progress(
-        SpinnerColumn(style="bright_cyan"),
-        TextColumn("[grey85]Auditing[/]"),
-        BarColumn(bar_width=30, complete_style="bright_cyan",
-                  finished_style="bright_cyan", pulse_style="grey35"),
-        TextColumn("[bold bright_cyan]{task.percentage:>3.0f}%[/]"),
-        TextColumn("[grey54]{task.fields[cur]}[/]"),
+        SpinnerColumn(style=C_CYAN),
+        TextColumn(f"[{C_TEXT}]Auditing[/]"),
+        BarColumn(bar_width=30, complete_style=C_GREEN_B,
+                  finished_style=C_GREEN, pulse_style=C_LINE),
+        TextColumn(f"[bold {C_GREEN_B}]{{task.percentage:>3.0f}}%[/]"),
+        TextColumn(f"[{C_FAINT}]{{task.fields[cur]}}[/]"),
         console=console,
         transient=True,
     )
@@ -387,25 +418,25 @@ def print_fails_table(results: list[dict], limit: int = 12):
     shown = fails[:limit]
     extra = len(fails) - len(shown)
     table = Table(
-        title=f"[bold red1]Failing controls[/]  [grey54]({len(fails)} · all auto-fixable)[/]",
+        title=f"[bold {C_RED}]Failing controls[/]  [{C_FAINT}]({len(fails)} · all auto-fixable)[/]",
         title_justify="left",
-        caption=(f"[grey50]+ {extra} more — full list in the report[/]" if extra else None),
+        caption=(f"[{C_DIM}]+ {extra} more — full list in the report[/]" if extra else None),
         caption_justify="left",
-        border_style="grey30",
+        border_style=C_LINE,
         box=box.SIMPLE,
         show_lines=False,
         padding=(0, 1),
     )
-    table.add_column("", style="red1", width=1)
-    table.add_column("ID", style="bold grey82", width=9)
-    table.add_column("Control", style="grey70")
-    table.add_column("What's wrong", style="grey54")
+    table.add_column("", style=C_RED, width=1)
+    table.add_column("ID", style=f"bold {C_TEXT}", width=9)
+    table.add_column("Control", style=C_MUTE)
+    table.add_column("What's wrong", style=C_FAINT)
 
     for r in shown:
         detail = r.get("detail", "")
         if len(detail) > 44:
             detail = detail[:43] + "…"
-        table.add_row("✘", r["id"], r["title"], detail)
+        table.add_row("x", r["id"], r["title"], detail)
 
     console.print(table)
     console.print()
@@ -417,15 +448,15 @@ def print_warns_table(results: list[dict]):
         return
 
     table = Table(
-        title=f"[bold dark_orange]Warnings ({len(warns)})[/]",
-        border_style="dark_orange",
+        title=f"[bold {C_AMBER}]Warnings ({len(warns)})[/]",
+        border_style=C_AMBER,
         box=box.SIMPLE_HEAVY,
         show_lines=False,
         padding=(0, 1),
     )
-    table.add_column("ID", style="bold dark_orange", width=10)
-    table.add_column("Control", style="grey70")
-    table.add_column("Detail", style="grey50")
+    table.add_column("ID", style=f"bold {C_AMBER}", width=10)
+    table.add_column("Control", style=C_MUTE)
+    table.add_column("Detail", style=C_DIM)
 
     for r in warns:
         detail = r.get("detail", "")
@@ -450,22 +481,22 @@ def print_manuals_table(results: list[dict]):
         return
 
     table = Table(
-        title=f"[bold orange1]Needs manual review[/]  [grey54]({len(manuals)})[/]",
+        title=f"[bold {C_GOLD}]Needs manual review[/]  [{C_FAINT}]({len(manuals)})[/]",
         title_justify="left",
-        caption="[grey50]LSS won't auto-apply these — review and apply by hand.[/]",
+        caption=f"[{C_DIM}]LSS won't auto-apply these — review and apply by hand.[/]",
         caption_justify="left",
-        border_style="grey30",
+        border_style=C_LINE,
         box=box.SIMPLE,
         show_lines=True,
         padding=(0, 1),
     )
-    table.add_column("", style="orange1", width=1)
-    table.add_column("ID", style="bold grey82", width=9)
-    table.add_column("Control", style="grey70", width=34)
-    table.add_column("How to remediate", style="grey58")
+    table.add_column("", style=C_GOLD, width=1)
+    table.add_column("ID", style=f"bold {C_TEXT}", width=9)
+    table.add_column("Control", style=C_MUTE, width=34)
+    table.add_column("How to remediate", style=C_FAINT)
 
     for r in manuals:
-        table.add_row("◐", r["id"], r["title"], r.get("detail", ""))
+        table.add_row("~", r["id"], r["title"], r.get("detail", ""))
 
     console.print(table)
     console.print()
@@ -475,22 +506,37 @@ def print_manuals_table(results: list[dict]):
 # Legacy helpers (used by harden.py, rollback.py, cli.py)
 # ---------------------------------------------------------------------------
 def info(msg: str):
-    console.print(f"  [grey50]▸[/] {msg}")
+    t = Text("  ")
+    t.append("[*] ", style=C_CYAN)
+    t.append(msg, style=C_MUTE)
+    console.print(t)
+
+def ok(msg: str):
+    t = Text("  ")
+    t.append("[+] ", style=f"bold {C_GREEN_B}")
+    t.append(msg, style=C_MUTE)
+    console.print(t)
 
 def err(msg: str):
-    err_console.print(f"  [red1]✗[/] {msg}")
+    t = Text("  ")
+    t.append("[x] ", style=f"bold {C_RED}")
+    t.append(msg, style=C_MUTE)
+    err_console.print(t)
 
 def warn(msg: str):
-    err_console.print(f"  [yellow]![/] {msg}")
+    t = Text("  ")
+    t.append("[!] ", style=C_AMBER)
+    t.append(msg, style=C_MUTE)
+    err_console.print(t)
 
 def header(msg: str):
-    console.print(f"\n  [bold]{msg}[/]")
+    console.print(f"\n  [bold {C_TEXT}]{msg}[/]")
 
 def rule():
-    console.print(Rule(style="grey30"))
+    console.print(Rule(style=C_LINE))
 
 def heavy_rule():
-    console.print(Rule(style="bright_cyan"))
+    console.print(Rule(style=C_GREEN))
 
 def double_rule():
-    console.print(Rule(style="blue", characters="═"))
+    console.print(Rule(style=C_GREEN, characters="═"))
