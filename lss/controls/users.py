@@ -343,7 +343,7 @@ def _fix_home_dirs_exist() -> list[RollbackEntry]:
             os.chown(root, uid, gid)
             for name in files + dirs:
                 os.chown(os.path.join(root, name), uid, gid, follow_symlinks=False)
-        os.chmod(str(p), 0o750)
+        os.chmod(str(p), 0o750)  # nosec B103 — CIS-mandated home-directory perms (0750)
         entries.append(RollbackEntry(
             action=f"created missing home dir {home} for {user}",
             undo=[["rm", "-rf", "--", str(p)]],

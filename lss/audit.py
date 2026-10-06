@@ -17,7 +17,7 @@ from lss import __version__
 from lss.lib import distro
 from lss.lib.output import (
     console, print_summary, banner_fade, stream_scan, print_fails_table,
-    print_manuals_table, print_section_breakdown, print_next_steps,
+    print_manuals_table, print_section_breakdown, print_next_steps, print_legend,
 )
 from lss.lib.registry import get_controls, CheckResult
 
@@ -75,6 +75,7 @@ def run_audit(args) -> int:
     # stays parseable. Otherwise: fade in the wordmark, then stream the scan.
     if not json_mode:
         banner_fade(subtitle=f"Scanning {len(checkable)} controls · read-only")
+        print_legend()
 
     results: list[dict] = []
     counts = {"pass": 0, "warn": 0, "fail": 0, "manual": 0, "skip": 0}
