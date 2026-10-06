@@ -25,9 +25,13 @@ from lss.controls import audit_rules
 from lss.lib.registry import get_control
 
 
-def _fake_auditctl(monkeypatch, stdout: str = "", returncode: int = 0) -> None:
-    """Make `auditctl -l` return `stdout`; any other command fails the test."""
+def _fake_auditctl(monkeypatch, stdout: str = "", returncode: int = 0,
+                   status: str = "enabled 0\n") -> None:
+    """Make `auditctl -l` return `stdout` and `auditctl -s` return `status`
+    (default: not immutable); any other command fails the test."""
     def fake_run(argv, *args, **kwargs):
+        if argv == ["auditctl", "-s"]:
+            return subprocess.CompletedProcess(argv, 0, stdout=status, stderr="")
         assert argv == ["auditctl", "-l"], argv
         return subprocess.CompletedProcess(argv, returncode, stdout=stdout, stderr="")
     monkeypatch.setattr(audit_rules.subprocess, "run", fake_run)
@@ -167,4 +171,18 @@ def test_immutable_flag_keeps_substring_match(tmp_path, monkeypatch):
     rules.write_text("# -e 2\n")
     assert get_control("4.1.16").check().status == "manual"
     rules.write_text("-e 2\n")
+    assert get_control("4.1.16").check().status == "warn"
+
+
+def test_immutable_active_passes_via_auditctl_s(tmp_path, monkeypatch):
+    """The immutable flag is reported by `auditctl -s` (`enabled 2`), never by
+    `auditctl -l`. Reading it from `-l` meant 4.1.16 could never pass at
+    runtime; it must pass when the kernel reports enabled 2."""
+    monkeypatch.setattr(audit_rules, "AUDIT_RULES_DIR", str(tmp_path))
+    # Loaded rules (-l) never carry -e 2; status (-s) is the only source.
+    _fake_auditctl(monkeypatch, "", status="enabled 2\nfailure 1\n")
+    assert get_control("4.1.16").check().status == "pass"
+    # enabled 1 (on, mutable) is not immutable, even with -e 2 persisted.
+    (tmp_path / "99-finalize.rules").write_text("-e 2\n")
+    _fake_auditctl(monkeypatch, "", status="enabled 1\n")
     assert get_control("4.1.16").check().status == "warn"

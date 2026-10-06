@@ -494,8 +494,31 @@ for _id, _title, _pattern, _rules in _AUDIT_CONTROLS:
 
 # ---- CIS 4.1.16: Ensure the audit configuration is immutable ----
 
+def _audit_enabled_flag() -> int | None:
+    """The kernel audit `enabled` flag from `auditctl -s` — 0 off, 1 on,
+    2 immutable — or None when it can't be read.
+
+    `auditctl -l` lists loaded rules but never prints the `-e` flag, so the
+    immutable state is only visible in the status report. Reading it from `-l`
+    (as this control used to) meant 4.1.16 could never pass at runtime."""
+    try:
+        r = subprocess.run(["auditctl", "-s"], capture_output=True, text=True)
+    except (FileNotFoundError, OSError):
+        return None
+    if r.returncode != 0:
+        return None
+    for line in r.stdout.splitlines():
+        parts = line.split()
+        if len(parts) >= 2 and parts[0] == "enabled":
+            try:
+                return int(parts[1])
+            except ValueError:
+                return None
+    return None
+
+
 def _check_audit_immutable() -> CheckResult:
-    if _rule_is_active("-e 2"):
+    if _audit_enabled_flag() == 2:
         return CheckResult("pass")
     if _rule_is_persisted("-e 2"):
         return CheckResult("warn", "immutable flag persisted but not active — reboot required")
