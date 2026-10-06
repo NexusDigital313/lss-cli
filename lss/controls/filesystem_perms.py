@@ -11,41 +11,59 @@ from __future__ import annotations
 import subprocess
 from pathlib import Path
 
-from lss.lib import journal
+from lss.lib import fsscan, journal
 from lss.lib.registry import Control, CheckResult, RollbackEntry, register
 from lss.lib.sysctl import set_sysctl
 
 
 # ---- CIS 1.4.1: Ensure core dumps are restricted ----
 
-def _check_core_dumps() -> CheckResult:
-    # Check limits.conf
-    limits_ok = False
-    limits_files = [Path("/etc/security/limits.conf")]
+LIMITS_CONF = "/etc/security/limits.conf"
+LIMITS_D = "/etc/security/limits.d"
+
+
+def _hard_core_entries(text: str) -> list[str]:
+    """Values of `* hard core` / `* - core` lines, in file order.
+
+    Only the "*" domain applies to every user; a user/group domain such as
+    `ftp hard core 0` covers that account alone, so it does not count."""
+    vals = []
+    for line in text.splitlines():
+        parts = line.split("#", 1)[0].split()
+        if (len(parts) >= 4 and parts[0] == "*" and parts[2] == "core"
+                and parts[1] in ("hard", "-")):
+            vals.append(parts[3])
+    return vals
+
+
+def _effective_hard_core() -> tuple[str | None, str]:
+    """pam_limits' effective `*` hard core value and any read problem.
+
+    pam_limits reads limits.conf, then limits.d/*.conf in C-locale order; a
+    later entry for the same domain overrides an earlier one."""
+    files = [Path(LIMITS_CONF)]
+    problem = ""
     try:
-        limits_files += list(Path("/etc/security/limits.d/").glob("*.conf"))
-    except OSError:
-        pass
-    for p in limits_files:
+        files += sorted(Path(LIMITS_D).glob("*.conf"), key=lambda q: q.name)
+    except OSError as e:
+        problem = f"cannot list {LIMITS_D}: {e}"
+    value = None
+    for p in files:
         try:
             content = p.read_text()
-        except OSError:
-            # Missing or unreadable — cannot glean a limit from it, skip it.
+        except FileNotFoundError:
             continue
-        for line in content.splitlines():
-            line = line.strip()
-            if line.startswith("#") or not line:
-                continue
-            # limits.conf format: <domain> <type> <item> <value>. We need a
-            # hard core limit of exactly 0. The old `"core" in line and
-            # "0" in line` substring test accepted e.g. "* soft core 100000"
-            # (contains "core" and "0") as compliant — a nonzero core-size
-            # limit passing the check.
-            parts = line.split()
-            if (len(parts) >= 4 and parts[2] == "core"
-                    and parts[1] in ("hard", "-") and parts[3] == "0"):
-                limits_ok = True
-                break
+        except OSError as e:
+            problem = f"cannot read {p}: {e}"
+            continue
+        for v in _hard_core_entries(content):
+            value = v
+    return value, problem
+
+
+def _check_core_dumps() -> CheckResult:
+    value, problem = _effective_hard_core()
+    limits_ok = value == "0"
 
     # Check sysctl
     try:
@@ -55,11 +73,15 @@ def _check_core_dumps() -> CheckResult:
         suid_dumpable = "unknown"
 
     if limits_ok and suid_dumpable == "0":
-        return CheckResult("pass")
+        # A limits file we could not read may override the 0: never a pass.
+        return CheckResult("warn", f"cannot verify: {problem}") if problem else CheckResult("pass")
 
     issues = []
     if not limits_ok:
-        issues.append("no 'hard core 0' in limits.conf")
+        issues.append("no effective '* hard core 0' in limits.conf/limits.d"
+                      + (f" (effective value {value})" if value is not None else ""))
+    if problem:
+        issues.append(problem)
     if suid_dumpable != "0":
         issues.append(f"fs.suid_dumpable={suid_dumpable}")
     return CheckResult("fail", "; ".join(issues))
@@ -69,8 +91,8 @@ def _fix_core_dumps() -> list[RollbackEntry]:
     entries = []
 
     # Set limits — back up if the file already exists, otherwise undo by rm
-    conf = Path("/etc/security/limits.d/80-lss.conf")
-    if not conf.exists() or "hard core 0" not in conf.read_text():
+    conf = Path(LIMITS_D) / "80-lss.conf"
+    if not conf.exists() or _hard_core_entries(conf.read_text()) != ["0"]:
         bkp = journal.backup_file(str(conf))
         conf.write_text("* hard core 0\n")
         entries.append(RollbackEntry(
@@ -208,25 +230,30 @@ register(Control(
 ))
 
 
+# ---- CIS 6.1.9-6.1.12: whole-system find scans ----
+
+def _scan_result(predicate: list[str], status: str, label: str) -> CheckResult:
+    """Run `predicate` on every local mount (not just /, which -xdev pins
+    to the root filesystem) and grade the result. An incomplete scan never
+    passes: with no findings it warns with what was not covered."""
+    try:
+        found, note = fsscan.find_all(predicate)
+    except FileNotFoundError:
+        return CheckResult("warn", "cannot verify: 'find' not available")
+    except OSError as e:
+        return CheckResult("warn", f"scan failed: {e}")
+    if not found:
+        return CheckResult("warn", note) if note else CheckResult("pass")
+    count = len(found)
+    sample = found[0] if count == 1 else f"{found[0]} (+{count-1} more)"
+    detail = f"{count} {label}: {sample}"
+    return CheckResult(status, f"{detail} ({note})" if note else detail)
+
+
 # ---- CIS 6.1.9: Ensure no world-writable files exist ----
 
 def _check_world_writable() -> CheckResult:
-    try:
-        r = subprocess.run(
-            ["find", "/", "-xdev", "-type", "f", "-perm", "-0002",
-             "-not", "-path", "/proc/*", "-not", "-path", "/sys/*"],
-            capture_output=True, text=True, timeout=120,
-        )
-        files = [f for f in r.stdout.strip().splitlines() if f]
-        if not files:
-            return CheckResult("pass")
-        count = len(files)
-        sample = files[0] if count == 1 else f"{files[0]} (+{count-1} more)"
-        return CheckResult("fail", f"{count} world-writable file(s): {sample}")
-    except FileNotFoundError:
-        return CheckResult("warn", "cannot verify: 'find' not available")
-    except subprocess.TimeoutExpired:
-        return CheckResult("warn", "scan timed out")
+    return _scan_result(["-type", "f", "-perm", "-0002"], "fail", "world-writable file(s)")
 
 
 def _fix_world_writable() -> list[RollbackEntry]:
@@ -237,16 +264,12 @@ def _fix_world_writable() -> list[RollbackEntry]:
     rollback restores it exactly — we are not forcing a blanket 0644.
     """
     try:
-        r = subprocess.run(
-            ["find", "/", "-xdev", "-type", "f", "-perm", "-0002",
-             "-not", "-path", "/proc/*", "-not", "-path", "/sys/*"],
-            capture_output=True, text=True, timeout=120,
-        )
-    except subprocess.TimeoutExpired:
+        found, _note = fsscan.find_all(["-type", "f", "-perm", "-0002"])
+    except FileNotFoundError:
         return []
     entries: list[RollbackEntry] = []
     import os as _os, stat as _stat
-    for fp in r.stdout.splitlines():
+    for fp in found:
         if not fp:
             continue
         try:
@@ -283,22 +306,7 @@ register(Control(
 # ---- CIS 6.1.10: Ensure no unowned files or directories exist ----
 
 def _check_unowned() -> CheckResult:
-    try:
-        r = subprocess.run(
-            ["find", "/", "-xdev", "-nouser",
-             "-not", "-path", "/proc/*", "-not", "-path", "/sys/*"],
-            capture_output=True, text=True, timeout=120,
-        )
-        files = [f for f in r.stdout.strip().splitlines() if f]
-        if not files:
-            return CheckResult("pass")
-        count = len(files)
-        sample = files[0] if count == 1 else f"{files[0]} (+{count-1} more)"
-        return CheckResult("warn", f"{count} unowned file(s): {sample}")
-    except FileNotFoundError:
-        return CheckResult("warn", "cannot verify: 'find' not available")
-    except subprocess.TimeoutExpired:
-        return CheckResult("warn", "scan timed out")
+    return _scan_result(["-nouser"], "warn", "unowned file(s)")
 
 
 register(Control(
@@ -314,22 +322,7 @@ register(Control(
 # ---- CIS 6.1.11: Ensure no ungrouped files or directories exist ----
 
 def _check_ungrouped() -> CheckResult:
-    try:
-        r = subprocess.run(
-            ["find", "/", "-xdev", "-nogroup",
-             "-not", "-path", "/proc/*", "-not", "-path", "/sys/*"],
-            capture_output=True, text=True, timeout=120,
-        )
-        files = [f for f in r.stdout.strip().splitlines() if f]
-        if not files:
-            return CheckResult("pass")
-        count = len(files)
-        sample = files[0] if count == 1 else f"{files[0]} (+{count-1} more)"
-        return CheckResult("warn", f"{count} ungrouped file(s): {sample}")
-    except FileNotFoundError:
-        return CheckResult("warn", "cannot verify: 'find' not available")
-    except subprocess.TimeoutExpired:
-        return CheckResult("warn", "scan timed out")
+    return _scan_result(["-nogroup"], "warn", "ungrouped file(s)")
 
 
 register(Control(
@@ -345,34 +338,13 @@ register(Control(
 # ---- CIS 6.1.12: Ensure sticky bit is set on world-writable directories ----
 
 def _check_sticky_bit() -> CheckResult:
-    try:
-        r = subprocess.run(
-            ["find", "/", "-xdev", "-type", "d", "-perm", "-0002",
-             "!", "-perm", "-1000",
-             "-not", "-path", "/proc/*", "-not", "-path", "/sys/*"],
-            capture_output=True, text=True, timeout=120,
-        )
-        dirs = [d for d in r.stdout.strip().splitlines() if d]
-        if not dirs:
-            return CheckResult("pass")
-        count = len(dirs)
-        sample = dirs[0] if count == 1 else f"{dirs[0]} (+{count-1} more)"
-        return CheckResult("fail", f"{count} world-writable dir(s) without sticky bit: {sample}")
-    except FileNotFoundError:
-        return CheckResult("warn", "cannot verify: 'find' not available")
-    except subprocess.TimeoutExpired:
-        return CheckResult("warn", "scan timed out")
+    return _scan_result(["-type", "d", "-perm", "-0002", "!", "-perm", "-1000"], "fail", "world-writable dir(s) without sticky bit")
 
 
 def _fix_sticky_bit() -> list[RollbackEntry]:
-    r = subprocess.run(
-        ["find", "/", "-xdev", "-type", "d", "-perm", "-0002",
-         "!", "-perm", "-1000",
-         "-not", "-path", "/proc/*", "-not", "-path", "/sys/*"],
-        capture_output=True, text=True, timeout=120,
-    )
+    found, _note = fsscan.find_all(["-type", "d", "-perm", "-0002", "!", "-perm", "-1000"])
     entries = []
-    for d in r.stdout.strip().splitlines():
+    for d in found:
         if d:
             subprocess.run(["chmod", "a+t", d], capture_output=True)
             entries.append(RollbackEntry(

@@ -60,12 +60,185 @@ def _dconf_write(path: str, content: str, key_human: str) -> RollbackEntry:
     )
 
 
+# The user-session dconf database. Keyfiles under local.d/ (and locks under
+# local.d/locks/) reach a user's session only when /etc/dconf/profile/user
+# lists `system-db:local`, and only once `dconf update` has compiled them into
+# the binary db /etc/dconf/db/local. Stock Debian/Ubuntu ship no user profile
+# at all, so a keyfile alone enforces nothing there. (The greeter's own db,
+# gdm.d/, is wired up by the profile/gdm file the gdm3 package ships.)
+_USER_PROFILE = "/etc/dconf/profile/user"
+_LOCAL_DB = "/etc/dconf/db/local"
+_LOCAL_D = "/etc/dconf/db/local.d"
+_LOCAL_LOCKS = "/etc/dconf/db/local.d/locks"
+
+
+def _profile_lines(text: str) -> list[str]:
+    return [
+        ln.strip() for ln in text.splitlines()
+        if ln.strip() and not ln.strip().startswith("#")
+    ]
+
+
+def _local_db_problem() -> str | None:
+    """Return why local.d settings are NOT in effect, or None if they are.
+
+    Requires an uncommented `system-db:local` in the user profile and a
+    compiled /etc/dconf/db/local no older than any file under local.d/
+    (otherwise the last `dconf update` predates the policy on disk).
+    """
+    prof = Path(_USER_PROFILE)
+    try:
+        if not prof.exists():
+            return (f"{_USER_PROFILE} does not exist, so keyfiles in {_LOCAL_D} "
+                    "are not applied to user sessions")
+        lines = _profile_lines(prof.read_text())
+    except OSError as e:
+        return f"cannot read {_USER_PROFILE}: {e}"
+    if "system-db:local" not in lines:
+        return (f"{_USER_PROFILE} does not list system-db:local, so keyfiles "
+                f"in {_LOCAL_D} are not applied to user sessions")
+    db = Path(_LOCAL_DB)
+    try:
+        if not db.is_file():
+            return f"{_LOCAL_DB} is not compiled — run `dconf update`"
+        db_mtime = db.stat().st_mtime
+        d = Path(_LOCAL_D)
+        newest = max(
+            (f.stat().st_mtime for f in d.rglob("*") if f.is_file()),
+            default=0.0,
+        ) if d.is_dir() else 0.0
+    except OSError as e:
+        return f"cannot read the dconf local db: {e}"
+    if newest > db_mtime:
+        return (f"{_LOCAL_DB} is older than the keyfiles in {_LOCAL_D} — "
+                "run `dconf update`")
+    return None
+
+
+def _local_keyfile_settings() -> dict[tuple[str, str], str] | None:
+    """Merge every keyfile in local.d/ into {(schema path, key): value}.
+
+    dconf update reads the keyfiles in name order and a later file overrides
+    an earlier one, so the merge does the same. Returns None if a keyfile
+    could not be read.
+    """
+    d = Path(_LOCAL_D)
+    out: dict[tuple[str, str], str] = {}
+    try:
+        if not d.is_dir():
+            return out
+        files = sorted((f for f in d.iterdir() if f.is_file()), key=lambda f: f.name)
+        texts = [f.read_text() for f in files]
+    except OSError:
+        return None
+    for text in texts:
+        section = None
+        for raw in text.splitlines():
+            line = raw.strip()
+            if not line or line.startswith("#"):
+                continue
+            m = re.fullmatch(r"\[(.+)\]", line)
+            if m:
+                section = m.group(1).strip().strip("/")
+                continue
+            if section is not None and "=" in line:
+                key, _, val = line.partition("=")
+                out[(section, key.strip())] = val.strip()
+    return out
+
+
+def _uint32(val: str | None) -> int | None:
+    if val is None:
+        return None
+    m = re.fullmatch(r"(?:uint32\s+)?(\d+)", val.strip())
+    return int(m.group(1)) if m else None
+
+
+def _locked_keys() -> set[str] | None:
+    """Uncommented key paths in every file under local.d/locks/ (None if unreadable)."""
+    d = Path(_LOCAL_LOCKS)
+    keys: set[str] = set()
+    try:
+        if not d.is_dir():
+            return keys
+        for f in d.iterdir():
+            if f.is_file():
+                keys.update(_profile_lines(f.read_text()))
+    except OSError:
+        return None
+    return keys
+
+
+def _ensure_local_profile() -> list[RollbackEntry]:
+    """Make /etc/dconf/profile/user apply the local db (user-db:user first).
+
+    Backs the profile up through the journal; a profile LSS created is
+    removed on rollback. Returns [] when the profile already lists
+    system-db:local.
+    """
+    p = Path(_USER_PROFILE)
+    existing = p.read_text() if p.exists() else None
+    lines = _profile_lines(existing or "")
+    if "system-db:local" in lines:
+        return []
+    if existing is None:
+        new = "user-db:user\nsystem-db:local\n"
+    else:
+        new = existing if existing.endswith("\n") or not existing else existing + "\n"
+        if not any(ln.startswith("user-db:") for ln in lines):
+            new = "user-db:user\n" + new
+        new += "system-db:local\n"
+    p.parent.mkdir(parents=True, exist_ok=True)
+    bkp = journal.backup_file(str(p))
+    p.write_text(new)
+    return [RollbackEntry(
+        action=f"enabled the dconf local db in {_USER_PROFILE}",
+        path=str(p),
+        backup=bkp,
+        undo=[] if bkp else [["rm", "-f", "--", str(p)]],
+    )]
+
+
+def _local_db_verdict() -> CheckResult:
+    """pass if the local db is in effect, else warn with the reason."""
+    problem = _local_db_problem()
+    return CheckResult("warn", problem) if problem else CheckResult("pass")
+
+
+def _local_dconf_write(path: str, content: str, key_human: str) -> list[RollbackEntry]:
+    """_dconf_write for a local.d keyfile, wiring the user profile up first."""
+    import shutil as _sh
+    if not _sh.which("dconf"):
+        # Let _dconf_write raise its explanatory error before touching the profile.
+        return [_dconf_write(path, content, key_human)]
+    entries = _ensure_local_profile()
+    try:
+        entries.append(_dconf_write(path, content, key_human))
+    except Exception:
+        # The profile change is not journalled if we raise, so undo it here.
+        for e in entries:
+            if e.backup:
+                Path(e.path).write_text(Path(e.backup).read_text())
+            else:
+                Path(e.path).unlink(missing_ok=True)
+        raise
+    return entries
+
+
 def _gdm_installed() -> bool:
     # If neither package manager is present, GDM cannot have been installed
     # via a package — treat as not installed (mirrors the returncode != 0
     # path) rather than letting FileNotFoundError abort the whole audit.
     try:
-        r = subprocess.run(["dpkg-query", "-W", "gdm3"], capture_output=True, text=True)
+        # `-f=${Status}` is required: plain `dpkg-query -W` prints only
+        # `name<TAB>version`, so the "install ok installed" guard never
+        # matched, _gdm_installed() returned False on every Debian host that
+        # has GDM, and all eight 1.8.x checks vacuously passed as "GDM not
+        # installed". lss/lib/pkg.py is_installed already uses this format.
+        r = subprocess.run(
+            ["dpkg-query", "-W", "-f=${Status}", "gdm3"],
+            capture_output=True, text=True,
+        )
         if r.returncode == 0 and "install ok installed" in r.stdout:
             return True
     except FileNotFoundError:
@@ -75,6 +248,37 @@ def _gdm_installed() -> bool:
         return r2.returncode == 0
     except FileNotFoundError:
         return False
+
+
+def _dconf_key_is(text: str, key: str, value: str) -> bool:
+    """Return True iff a dconf keyfile line sets `key` to exactly `value`.
+
+    The match is anchored per line, so it ignores commented `# key=value`
+    lines and requires THIS key's own value — not merely the key name being
+    present and "true" appearing anywhere in the file (e.g. on another
+    key's line).
+    """
+    return re.search(
+        rf"^\s*{re.escape(key)}\s*=\s*{re.escape(value)}\s*$",
+        text,
+        re.MULTILINE,
+    ) is not None
+
+
+def _locks_file_locks(text: str, keys: tuple[str, ...]) -> bool:
+    """Return True iff an uncommented line of a dconf locks file locks one of `keys`.
+
+    dconf locks files list absolute key paths, one per line, and a lock covers
+    exactly the key it names. A commented example line locks nothing, and the
+    old `"lock"` / `"automount"` substring tests also matched unrelated keys —
+    `/org/gnome/desktop/interface/clock-format` contains "lock", and a lock on
+    `.../automount-open` alone leaves `.../automount` itself overridable.
+    """
+    for line in text.splitlines():
+        line = line.strip()
+        if line and not line.startswith("#") and line in keys:
+            return True
+    return False
 
 
 # ---- CIS 1.8.1: Ensure GNOME Display Manager is removed (server) ----
@@ -99,15 +303,28 @@ register(Control(
 def _check_gdm_banner() -> CheckResult:
     if not _gdm_installed():
         return CheckResult("pass", "GDM not installed")
-    banner_conf = Path("/etc/gdm3/greeter.dconf-defaults")
-    if not banner_conf.exists():
-        banner_conf = Path("/etc/dconf/db/gdm.d/01-banner-message")
-    if banner_conf.exists():
+    # Read both banner sources, like 1.8.3. The old code read only
+    # greeter.dconf-defaults whenever it existed — always, on Debian with
+    # gdm3 — so it never saw 01-banner-message, the file _fix_gdm_banner
+    # writes, and `lss harden` could not turn this control green. The old
+    # substring test hid that by passing on the stock file's commented
+    # `# banner-message-enable=true` example.
+    for conf_path in [
+        "/etc/dconf/db/gdm.d/01-banner-message",
+        "/etc/gdm3/greeter.dconf-defaults",
+    ]:
+        p = Path(conf_path)
+        if not p.exists():
+            continue
         try:
-            text = banner_conf.read_text()
+            text = p.read_text()
         except OSError:
-            text = ""
-        if "banner-message-enable" in text and "true" in text.lower():
+            continue
+        # The old test (key name present AND "true" anywhere in the file)
+        # false-passed on a commented `# banner-message-enable=true` example
+        # line, and on `banner-message-enable=false` whenever any other key
+        # in the file was true (e.g. disable-user-list=true).
+        if _dconf_key_is(text, "banner-message-enable", "true"):
             return CheckResult("pass")
     return CheckResult("fail", "GDM login banner not configured")
 
@@ -150,7 +367,11 @@ def _check_gdm_user_list() -> CheckResult:
                 text = p.read_text()
             except OSError:
                 continue
-            if "disable-user-list" in text and "true" in text.lower():
+            # The old test (key name present AND "true" anywhere in the file)
+            # false-passed on a commented `# disable-user-list=true` example
+            # line, and on `disable-user-list=false` whenever any other key
+            # in the file was true (e.g. banner-message-enable=true).
+            if _dconf_key_is(text, "disable-user-list", "true"):
                 return CheckResult("pass")
     return CheckResult("fail", "GDM user list not disabled")
 
@@ -182,37 +403,47 @@ register(Control(
 def _check_gdm_screenlock() -> CheckResult:
     if not _gdm_installed():
         return CheckResult("pass", "GDM not installed")
-    # Check for screen lock settings in dconf
-    for conf_path in [
-        "/etc/dconf/db/local.d/00-screensaver",
-        "/etc/dconf/db/gdm.d/00-screensaver",
-    ]:
-        p = Path(conf_path)
-        if p.exists():
-            try:
-                text = p.read_text()
-            except OSError:
-                continue
-            # Must be lock-enabled=true, not merely the presence of the key —
-            # `lock-enabled=false` would otherwise (wrongly) pass.
-            if re.search(r"lock-enabled\s*=\s*true", text):
-                return CheckResult("pass")
-    return CheckResult("warn", "GDM screen lock not explicitly configured")
+    # CIS audits the session idle-delay (1..900 s; 0 means never idle) and the
+    # screensaver lock-delay (0..5 s). The old check only looked for
+    # lock-enabled=true — GNOME's default — so a session that never goes idle
+    # passed; it also accepted the greeter db (gdm.d), which user sessions
+    # never read.
+    settings = _local_keyfile_settings()
+    if settings is None:
+        return CheckResult("warn", f"cannot read the keyfiles in {_LOCAL_D}")
+    idle = _uint32(settings.get(("org/gnome/desktop/session", "idle-delay")))
+    lock = _uint32(settings.get(("org/gnome/desktop/screensaver", "lock-delay")))
+    enabled = settings.get(("org/gnome/desktop/screensaver", "lock-enabled"), "true")
+    problems = []
+    if idle is None or not 1 <= idle <= 900:
+        problems.append("[org/gnome/desktop/session] idle-delay is not uint32 1..900")
+    if lock is None or lock > 5:
+        problems.append("[org/gnome/desktop/screensaver] lock-delay is not uint32 0..5")
+    if enabled != "true":
+        problems.append("[org/gnome/desktop/screensaver] lock-enabled is not true")
+    if problems:
+        return CheckResult("warn", "; ".join(problems))
+    problem = _local_db_problem()
+    if problem:
+        return CheckResult("warn", problem)
+    return CheckResult("pass")
 
 
-_GDM_SCREENLOCK_CONTENT = """[org/gnome/desktop/screensaver]
-lock-enabled=true
-lock-delay=uint32 0
+_GDM_SCREENLOCK_CONTENT = """[org/gnome/desktop/session]
 idle-delay=uint32 900
+
+[org/gnome/desktop/screensaver]
+lock-enabled=true
+lock-delay=uint32 5
 """
 
 
 def _fix_gdm_screenlock() -> list[RollbackEntry]:
-    return [_dconf_write(
+    return _local_dconf_write(
         "/etc/dconf/db/local.d/00-screensaver",
         _GDM_SCREENLOCK_CONTENT,
         "GDM idle screen lock",
-    )]
+    )
 
 
 register(Control(
@@ -229,34 +460,41 @@ register(Control(
 def _check_gdm_lock_override() -> CheckResult:
     if not _gdm_installed():
         return CheckResult("pass", "GDM not installed")
-    locks_dir = Path("/etc/dconf/db/local.d/locks")
-    if locks_dir.exists():
-        try:
-            entries = list(locks_dir.glob("*"))
-        except OSError:
-            entries = []
-        for f in entries:
-            try:
-                text = f.read_text()
-            except OSError:
-                continue
-            if "screensaver" in text.lower() or "lock" in text.lower():
-                return CheckResult("pass")
-    return CheckResult("warn", "GDM screen lock override protection not configured")
+    # CIS requires locks on both settings 1.8.4 audits: the session
+    # idle-delay and the screensaver lock-delay. The old check passed on a
+    # lock on any one of lock-enabled / lock-delay / idle-delay, leaving the
+    # idle timeout itself user-overridable (and `lss harden` locked
+    # screensaver/idle-delay, a key that does not exist, instead of
+    # session/idle-delay).
+    locked = _locked_keys()
+    if locked is None:
+        return CheckResult("warn", f"cannot read the lock files in {_LOCAL_LOCKS}")
+    missing = [k for k in _SCREENLOCK_LOCKS if k not in locked]
+    if missing:
+        return CheckResult("warn", "screen-lock settings not locked: " + ", ".join(missing))
+    problem = _local_db_problem()
+    if problem:
+        return CheckResult("warn", problem)
+    return CheckResult("pass")
 
 
-_GDM_SCREENLOCK_LOCK_CONTENT = """/org/gnome/desktop/screensaver/lock-enabled
+_SCREENLOCK_LOCKS = (
+    "/org/gnome/desktop/session/idle-delay",
+    "/org/gnome/desktop/screensaver/lock-delay",
+)
+
+_GDM_SCREENLOCK_LOCK_CONTENT = """/org/gnome/desktop/session/idle-delay
 /org/gnome/desktop/screensaver/lock-delay
-/org/gnome/desktop/screensaver/idle-delay
+/org/gnome/desktop/screensaver/lock-enabled
 """
 
 
 def _fix_gdm_lock_override() -> list[RollbackEntry]:
-    return [_dconf_write(
+    return _local_dconf_write(
         "/etc/dconf/db/local.d/locks/00-screensaver",
         _GDM_SCREENLOCK_LOCK_CONTENT,
         "GDM screen-lock override protection",
-    )]
+    )
 
 
 register(Control(
@@ -288,7 +526,7 @@ def _check_gdm_automount() -> CheckResult:
             # `automount=true\nautomount-open=false` pairing — automount itself
             # still enabled.
             if re.search(r"^\s*automount\s*=\s*false", text, re.MULTILINE):
-                return CheckResult("pass")
+                return _local_db_verdict()
 
     # Check gsettings if available
     try:
@@ -311,11 +549,11 @@ automount-open=false
 
 
 def _fix_gdm_automount() -> list[RollbackEntry]:
-    return [_dconf_write(
+    return _local_dconf_write(
         "/etc/dconf/db/local.d/00-media-automount",
         _GDM_AUTOMOUNT_CONTENT,
         "GDM removable-media automount disabled",
-    )]
+    )
 
 
 register(Control(
@@ -343,8 +581,13 @@ def _check_gdm_automount_lock() -> CheckResult:
                 text = f.read_text()
             except OSError:
                 continue
-            if "automount" in text.lower():
-                return CheckResult("pass")
+            # Require a real (uncommented) lock on the automount key itself.
+            # The old `"automount" in text` substring test passed on a
+            # commented example line, on any comment that mentioned automount,
+            # and on a lock covering only automount-open — which leaves
+            # automount overridable.
+            if _locks_file_locks(text, ("/org/gnome/desktop/media-handling/automount",)):
+                return _local_db_verdict()
     return CheckResult("warn", "GDM automount override protection not configured")
 
 
@@ -354,11 +597,11 @@ _GDM_AUTOMOUNT_LOCK_CONTENT = """/org/gnome/desktop/media-handling/automount
 
 
 def _fix_gdm_automount_lock() -> list[RollbackEntry]:
-    return [_dconf_write(
+    return _local_dconf_write(
         "/etc/dconf/db/local.d/locks/00-media-automount",
         _GDM_AUTOMOUNT_LOCK_CONTENT,
         "GDM automount override protection",
-    )]
+    )
 
 
 register(Control(
@@ -388,8 +631,13 @@ def _check_gdm_autorun() -> CheckResult:
                 text = p.read_text()
             except OSError:
                 continue
-            if "autorun-never=true" in text.replace(" ", ""):
-                return CheckResult("pass")
+            # Require an uncommented `autorun-never=true`. The old
+            # `"autorun-never=true" in text.replace(" ", "")` substring test
+            # also matched a commented `# autorun-never=true` example line
+            # (the space-strip left the key intact behind the '#'), a false
+            # pass. Anchored regex, matching the _check_gdm_automount sibling.
+            if re.search(r"^\s*autorun-never\s*=\s*true", text, re.MULTILINE):
+                return _local_db_verdict()
     try:
         r = subprocess.run(
             ["gsettings", "get", "org.gnome.desktop.media-handling", "autorun-never"],
@@ -408,11 +656,11 @@ autorun-never=true
 
 
 def _fix_gdm_autorun() -> list[RollbackEntry]:
-    return [_dconf_write(
+    return _local_dconf_write(
         "/etc/dconf/db/local.d/00-autorun-never",
         _GDM_AUTORUN_CONTENT,
         "GDM autorun-never",
-    )]
+    )
 
 
 register(Control(

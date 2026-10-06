@@ -16,6 +16,10 @@ from pathlib import Path
 
 from lss.lib.registry import Control, CheckResult, RollbackEntry, register
 
+PASSWD_FILE = "/etc/passwd"
+GROUP_FILE = "/etc/group"
+SHADOW_FILE = "/etc/shadow"
+
 
 def _read_lines(path: Path) -> list[str] | None:
     """Read a file's lines, tolerating absence/unreadability (OSError).
@@ -35,7 +39,7 @@ def _read_lines(path: Path) -> list[str] | None:
 
 def _check_groups_exist() -> CheckResult:
     import grp
-    lines = _read_lines(Path("/etc/passwd"))
+    lines = _read_lines(Path(PASSWD_FILE))
     if lines is None:
         return CheckResult("warn", "/etc/passwd not readable")
     group_gids = set()
@@ -49,12 +53,11 @@ def _check_groups_exist() -> CheckResult:
     for line in lines:
         parts = line.split(":")
         if len(parts) >= 4:
-            try:
-                gid = int(parts[3])
-                if gid not in group_gids:
-                    missing.append(f"{parts[0]}(gid={gid})")
-            except ValueError:
-                continue
+            gid = _parse_id(parts[3])
+            if gid is None:
+                missing.append(f"{parts[0]}(non-numeric gid={parts[3]!r})")
+            elif gid not in group_gids:
+                missing.append(f"{parts[0]}(gid={gid})")
     if not missing:
         return CheckResult("pass")
     return CheckResult("fail", f"users with non-existent group: {', '.join(missing[:5])}")
@@ -69,23 +72,48 @@ register(Control(
 ))
 
 
+def _parse_id(field: str) -> int | None:
+    """A UID/GID field as an int ("00" is 0), or None if not a plain number."""
+    f = field.strip()
+    return int(f) if f.isascii() and f.isdigit() else None
+
+
+def _duplicate_ids(path: str, label: str) -> CheckResult:
+    """Group /etc/passwd or /etc/group entries by numeric ID (field 3).
+
+    IDs are compared as ints — "0" and "00" are the same UID to the kernel —
+    and a non-numeric ID field is an anomaly, never a pass.
+    """
+    lines = _read_lines(Path(path))
+    if lines is None:
+        return CheckResult("warn", f"{path} not readable")
+    id_map: dict[int, list[str]] = {}
+    bad: list[str] = []
+    for line in lines:
+        if not line.strip() or line.startswith("#"):
+            continue
+        parts = line.split(":")
+        if len(parts) < 3:
+            bad.append(f"malformed entry {parts[0]!r}")
+            continue
+        n = _parse_id(parts[2])
+        if n is None:
+            bad.append(f"{parts[0]} has non-numeric {label} {parts[2]!r}")
+            continue
+        id_map.setdefault(n, []).append(parts[0])
+    dupes = {n: names for n, names in id_map.items() if len(names) > 1}
+    issues = [f"{label} {n}: {','.join(names)}" for n, names in list(dupes.items())[:3]]
+    issues += bad[:3]
+    if not issues:
+        return CheckResult("pass")
+    prefix = f"duplicate {label}s: " if dupes else ""
+    return CheckResult("fail", prefix + "; ".join(issues))
+
+
 # ---- CIS 6.2.4: Ensure no duplicate UIDs exist ----
 
 def _check_duplicate_uids() -> CheckResult:
-    lines = _read_lines(Path("/etc/passwd"))
-    if lines is None:
-        return CheckResult("warn", "/etc/passwd not readable")
-    uid_map: dict[str, list[str]] = {}
-    for line in lines:
-        parts = line.split(":")
-        if len(parts) >= 3:
-            uid = parts[2]
-            uid_map.setdefault(uid, []).append(parts[0])
-    dupes = {uid: users for uid, users in uid_map.items() if len(users) > 1}
-    if not dupes:
-        return CheckResult("pass")
-    detail = "; ".join(f"UID {uid}: {','.join(users)}" for uid, users in list(dupes.items())[:3])
-    return CheckResult("fail", f"duplicate UIDs: {detail}")
+    return _duplicate_ids(PASSWD_FILE, "UID")
 
 
 register(Control(
@@ -100,20 +128,7 @@ register(Control(
 # ---- CIS 6.2.5: Ensure no duplicate GIDs exist ----
 
 def _check_duplicate_gids() -> CheckResult:
-    lines = _read_lines(Path("/etc/group"))
-    if lines is None:
-        return CheckResult("warn", "/etc/group not readable")
-    gid_map: dict[str, list[str]] = {}
-    for line in lines:
-        parts = line.split(":")
-        if len(parts) >= 3:
-            gid = parts[2]
-            gid_map.setdefault(gid, []).append(parts[0])
-    dupes = {gid: groups for gid, groups in gid_map.items() if len(groups) > 1}
-    if not dupes:
-        return CheckResult("pass")
-    detail = "; ".join(f"GID {gid}: {','.join(groups)}" for gid, groups in list(dupes.items())[:3])
-    return CheckResult("fail", f"duplicate GIDs: {detail}")
+    return _duplicate_ids(GROUP_FILE, "GID")
 
 
 register(Control(
@@ -177,29 +192,70 @@ register(Control(
 
 # ---- CIS 6.2.8: Ensure root PATH integrity ----
 
-def _check_root_path() -> CheckResult:
-    path = os.environ.get("PATH", "")
-    issues = []
-    for entry in path.split(":"):
-        if not entry or entry == ".":
-            issues.append("empty or '.' in PATH")
+def _stat_entry(path: str) -> os.stat_result:
+    return os.stat(path)
+
+
+def _root_login_path() -> str | None:
+    """root's login-shell PATH (CIS: `sudo -Hiu root env`), not the PATH of
+    this process — under sudo that is just sudoers' secure_path."""
+    cmds = [["sudo", "-n", "-Hiu", "root", "env"]]
+    if hasattr(os, "geteuid") and os.geteuid() == 0:
+        cmds.append(["su", "-", "root", "-c", "env"])
+    for cmd in cmds:
+        try:
+            r = subprocess.run(cmd, capture_output=True, text=True,
+                               stdin=subprocess.DEVNULL, timeout=15)
+        except (FileNotFoundError, OSError, subprocess.TimeoutExpired):
             continue
-        p = Path(entry)
-        if not p.is_absolute():
+        if r.returncode != 0:
+            continue
+        for line in r.stdout.splitlines():
+            if line.startswith("PATH="):
+                return line[len("PATH="):]
+    return None
+
+
+def _check_root_path() -> CheckResult:
+    path = _root_login_path()
+    if path is None:
+        return CheckResult("warn", "could not read root's login PATH (sudo -Hiu root env failed)")
+    issues = []
+    unreadable = []
+    entries = path.split(":")
+    if "" in entries:
+        issues.append("empty entry in PATH (::, or leading/trailing :)")
+    for entry in entries:
+        if not entry:
+            continue
+        if entry == ".":
+            issues.append("'.' in PATH")
+            continue
+        if not entry.startswith("/"):
             issues.append(f"relative path: {entry}")
             continue
-        if p.exists():
-            try:
-                st = p.stat()
-            except OSError:
-                continue
-            if st.st_mode & stat.S_IWGRP:
-                issues.append(f"group-writable: {entry}")
-            if st.st_mode & stat.S_IWOTH:
-                issues.append(f"world-writable: {entry}")
-    if not issues:
-        return CheckResult("pass")
-    return CheckResult("fail", "; ".join(issues[:3]))
+        try:
+            st = _stat_entry(entry)
+        except FileNotFoundError:
+            issues.append(f"not a directory: {entry}")
+            continue
+        except OSError:
+            unreadable.append(entry)
+            continue
+        if not stat.S_ISDIR(st.st_mode):
+            issues.append(f"not a directory: {entry}")
+            continue
+        if st.st_uid != 0:
+            issues.append(f"not owned by root: {entry} (uid {st.st_uid})")
+        if st.st_mode & stat.S_IWGRP:
+            issues.append(f"group-writable: {entry}")
+        if st.st_mode & stat.S_IWOTH:
+            issues.append(f"world-writable: {entry}")
+    if issues:
+        return CheckResult("fail", "; ".join(issues[:3]))
+    if unreadable:
+        return CheckResult("warn", f"could not stat PATH entries: {', '.join(unreadable[:3])}")
+    return CheckResult("pass")
 
 
 register(Control(
@@ -619,21 +675,28 @@ register(Control(
 # ---- CIS 5.4.2: Ensure no accounts have empty passwords ----
 
 def _check_empty_passwords() -> CheckResult:
-    lines = _read_lines(Path("/etc/shadow"))
+    # An empty password field in /etc/passwd means no password is needed
+    # (it is never looked up in shadow), the same as an empty shadow hash.
+    passwd = _read_lines(Path(PASSWD_FILE))
+    empty = []
+    if passwd is not None:
+        for line in passwd:
+            parts = line.split(":")
+            if len(parts) >= 2 and parts[0] and parts[1] == "":
+                empty.append(f"{parts[0]} (/etc/passwd)")
+    lines = _read_lines(Path(SHADOW_FILE))
+    if lines is not None:
+        for line in lines:
+            parts = line.split(":")
+            if len(parts) >= 2 and parts[0] and parts[1] == "":
+                empty.append(parts[0])
+    if empty:
+        return CheckResult("fail", f"accounts with empty password: {', '.join(empty[:5])}")
+    if passwd is None:
+        return CheckResult("warn", "/etc/passwd not readable")
     if lines is None:
         return CheckResult("warn", "/etc/shadow not readable (root required?)")
-    empty = []
-    for line in lines:
-        parts = line.split(":")
-        if len(parts) >= 2:
-            user, pw = parts[0], parts[1]
-            if pw == "" or pw == "!":
-                # "!" means locked, which is fine
-                if pw == "":
-                    empty.append(user)
-    if not empty:
-        return CheckResult("pass")
-    return CheckResult("fail", f"accounts with empty password: {', '.join(empty[:5])}")
+    return CheckResult("pass")
 
 
 register(Control(

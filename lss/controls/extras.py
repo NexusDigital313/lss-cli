@@ -14,16 +14,31 @@ from pathlib import Path
 
 from lss.lib import distro, journal
 from lss.lib.registry import Control, CheckResult, RollbackEntry, register
+from lss.lib.sysctl import ipv6_disabled
+
+# Paths read by the checks below; module-level so tests can point them at tmp.
+_CRYPTO_POLICY_CONF = Path("/etc/crypto-policies/config")
+_CRYPTO_POLICY_STATE = Path("/etc/crypto-policies/state/current")
+_OPENSSL_CNF = Path("/etc/ssl/openssl.cnf")
+_SECURETTY = Path("/etc/securetty")
+_PAM_D = Path("/etc/pam.d")
+_SHADOW = Path("/etc/shadow")
+_LOG_DIR = "/var/log"
+_SHELL_RC_FILES = [Path("/etc/profile"), Path("/etc/bashrc"), Path("/etc/bash.bashrc")]
+_PROFILE_D = Path("/etc/profile.d")
+_PROC_CMDLINE = Path("/proc/cmdline")
 
 
 def _parse_ini_sections(text: str) -> dict[str, dict[str, str]]:
     """Very small openssl.cnf/INI reader: {section_name: {key: value}}. The
-    top (nameless) section — where `openssl_conf` must live — is keyed by ''."""
+    top (nameless) section — where `openssl_conf` must live — is keyed by ''.
+    OpenSSL treats `#` as a comment anywhere on a line, so inline comments are
+    stripped too."""
     sections: dict[str, dict[str, str]] = {"": {}}
     cur = ""
     for line in text.splitlines():
-        s = line.strip()
-        if not s or s.startswith("#") or s.startswith(";"):
+        s = line.split("#", 1)[0].strip()
+        if not s or s.startswith(";"):
             continue
         m = re.match(r"\[\s*([^\]]+?)\s*\]", s)
         if m:
@@ -82,23 +97,54 @@ def _set_key_in_section(text: str, section: str, key: str, value: str) -> str:
 # Custom (non-CIS) check that knows about both RHEL crypto-policies and
 # Debian's openssl MinProtocol.
 
+def _crypto_policy_name(text: str) -> str:
+    """The policy in a crypto-policies config/state file: the first line that
+    is not blank or a comment, inline `#` comment removed. "" if none."""
+    for line in text.splitlines():
+        s = line.split("#", 1)[0].strip()
+        if s:
+            return s
+    return ""
+
+
+def _is_legacy_policy(name: str) -> bool:
+    # Subpolicy modifiers keep the base policy: LEGACY:AD-SUPPORT is LEGACY.
+    return name.split(":", 1)[0].strip().upper() == "LEGACY"
+
+
 def _check_crypto_policy() -> CheckResult:
     # RHEL family: /etc/crypto-policies/config is the source of truth
-    p = Path("/etc/crypto-policies/config")
+    p = _CRYPTO_POLICY_CONF
     if p.exists():
         try:
-            val = p.read_text().strip()
+            val = _crypto_policy_name(p.read_text())
         except OSError:
-            return CheckResult("warn", "cannot read /etc/crypto-policies/config")
-        if val == "LEGACY":
-            return CheckResult("fail", "crypto policy is LEGACY")
+            return CheckResult("warn", f"cannot read {p}")
+        if not val:
+            return CheckResult("warn", f"no policy set in {p}")
+        if _is_legacy_policy(val):
+            return CheckResult("fail", f"crypto policy is {val}")
+        # The config only takes effect once update-crypto-policies applies
+        # it; state/current records what the back-ends were generated from.
+        state = _CRYPTO_POLICY_STATE
+        if state.exists():
+            try:
+                applied = _crypto_policy_name(state.read_text())
+            except OSError:
+                return CheckResult("warn", f"cannot read {state}")
+            if _is_legacy_policy(applied):
+                return CheckResult(
+                    "fail",
+                    f"config says {val} but the applied policy is {applied} — "
+                    f"run `update-crypto-policies --set {val}`",
+                )
         return CheckResult("pass", f"crypto policy: {val}")
 
     # Debian family: MinProtocol only takes effect if it's wired through
     # openssl_conf -> ssl_conf -> system_default. A bare [system_default_sect]
     # that nothing references does NOT harden TLS, so trace the chain rather
     # than substring-matching (which used to false-pass on an inert block).
-    ssl_conf = Path("/etc/ssl/openssl.cnf")
+    ssl_conf = _OPENSSL_CNF
     if ssl_conf.exists():
         try:
             eff = _openssl_min_protocol_effective(ssl_conf.read_text())
@@ -121,9 +167,9 @@ def _fix_crypto_policy() -> list[RollbackEntry]:
     On Debian family, set openssl MinProtocol = TLSv1.2 in /etc/ssl/openssl.cnf.
     No-op if neither config source is available (check returns skip).
     """
-    rhel_conf = Path("/etc/crypto-policies/config")
+    rhel_conf = _CRYPTO_POLICY_CONF
     if rhel_conf.exists():
-        prev = rhel_conf.read_text().strip()
+        prev = _crypto_policy_name(rhel_conf.read_text()) or "DEFAULT"
         r = subprocess.run(
             ["update-crypto-policies", "--set", "DEFAULT"],
             capture_output=True, text=True,
@@ -135,7 +181,7 @@ def _fix_crypto_policy() -> list[RollbackEntry]:
             undo=[["update-crypto-policies", "--set", prev]],
         )]
 
-    ssl_conf = Path("/etc/ssl/openssl.cnf")
+    ssl_conf = _OPENSSL_CNF
     if ssl_conf.exists():
         bkp = journal.backup_file(str(ssl_conf))
         text = ssl_conf.read_text()
@@ -187,11 +233,9 @@ register(Control(
 # ---- CIS 3.2.1: Ensure IP forwarding is disabled (IPv6 specific) ----
 
 def _check_ipv6_forwarding() -> CheckResult:
-    try:
-        r = subprocess.run(["sysctl", "-n", "net.ipv6.conf.all.disable_ipv6"], capture_output=True, text=True)
-    except FileNotFoundError:
-        return CheckResult("warn", "sysctl not available — cannot verify IPv6 forwarding")
-    if r.stdout.strip() == "1":
+    # all.disable_ipv6 = 1 alone does not disable IPv6 on an interface that
+    # was re-enabled afterwards or created later; ipv6_disabled() checks them all.
+    if ipv6_disabled():
         return CheckResult("pass", "IPv6 is disabled")
     try:
         r2 = subprocess.run(["sysctl", "-n", "net.ipv6.conf.all.forwarding"], capture_output=True, text=True)
@@ -203,9 +247,9 @@ def _check_ipv6_forwarding() -> CheckResult:
 
 
 def _fix_ipv6_forwarding() -> list[RollbackEntry]:
-    from lss.lib.sysctl import set_sysctl, get_sysctl
+    from lss.lib.sysctl import set_sysctl
     # If IPv6 is disabled the check already passes — no-op.
-    if get_sysctl("net.ipv6.conf.all.disable_ipv6") == "1":
+    if ipv6_disabled():
         return []
     return [set_sysctl("net.ipv6.conf.all.forwarding", "0")]
 
@@ -221,19 +265,84 @@ register(Control(
 
 # ---- CIS 5.5: Ensure root login is restricted to system console ----
 
-def _check_securetty() -> CheckResult:
-    p = Path("/etc/securetty")
-    if not p.exists():
-        # If securetty doesn't exist, root can log in from anywhere PAM allows
-        return CheckResult("pass", "no /etc/securetty — PAM controls access")
+def _pam_securetty_active() -> bool | None:
+    """True if pam_securetty.so is an uncommented auth module for the `login`
+    service (following @include / include / substack). /etc/securetty is only
+    consulted through that module; without it the file is inert. None if a
+    PAM file could not be read."""
+    login = _PAM_D / "login"
+    todo, seen = [login], set()
+    while todo:
+        f = todo.pop()
+        if f in seen:
+            continue
+        seen.add(f)
+        try:
+            text = f.read_text()
+        except FileNotFoundError:
+            continue
+        except OSError:
+            return None
+        for line in text.splitlines():
+            toks = line.split("#", 1)[0].split()
+            if not toks:
+                continue
+            if toks[0] == "@include" and len(toks) > 1:
+                todo.append(_PAM_D / toks[1])
+                continue
+            if toks[0].lstrip("-") != "auth" or len(toks) < 3:
+                continue
+            if toks[1] in ("include", "substack"):
+                todo.append(_PAM_D / toks[2])
+                continue
+            if any(t.rsplit("/", 1)[-1] == "pam_securetty.so" for t in toks[1:]):
+                return True
+    return False
+
+
+def _root_password_locked() -> bool | None:
+    """True if root's /etc/shadow password is locked (`!`/`*` prefix), so
+    root cannot log in with a password on any tty. None if unreadable."""
     try:
-        raw = p.read_text()
+        text = _SHADOW.read_text()
     except OSError:
-        return CheckResult("warn", "cannot read /etc/securetty")
-    lines = [l.strip() for l in raw.splitlines() if l.strip() and not l.startswith("#")]
-    if len(lines) <= 6:
-        return CheckResult("pass", f"{len(lines)} console(s) allowed")
-    return CheckResult("warn", f"{len(lines)} consoles in securetty — review for excess")
+        return None
+    for line in text.splitlines():
+        parts = line.split(":")
+        if parts[0] == "root" and len(parts) > 1:
+            return parts[1].startswith(("!", "*"))
+    return None
+
+
+def _check_securetty() -> CheckResult:
+    # /etc/securetty restricts nothing unless pam_securetty reads it, and
+    # pam_securetty with no file allows every tty. A locked root password
+    # meets the control on its own: root cannot log in on any tty.
+    active = _pam_securetty_active()
+    p = _SECURETTY
+    if active and p.exists():
+        try:
+            raw = p.read_text()
+        except OSError:
+            return CheckResult("warn", f"cannot read {p}")
+        lines = [l.strip() for l in raw.splitlines() if l.strip() and not l.strip().startswith("#")]
+        if len(lines) <= 6:
+            return CheckResult("pass", f"{len(lines)} console(s) allowed")
+        return CheckResult("warn", f"{len(lines)} consoles in securetty — review for excess")
+    locked = _root_password_locked()
+    if locked:
+        return CheckResult("pass", "root password is locked — root cannot log in on any tty")
+    if active is None:
+        return CheckResult("warn", f"cannot read the PAM login stack in {_PAM_D}")
+    if locked is None:
+        return CheckResult("warn", f"cannot read root's entry in {_SHADOW}")
+    if active:
+        return CheckResult("warn", f"no {p} — pam_securetty allows root on every tty")
+    return CheckResult(
+        "warn",
+        f"pam_securetty is not in the login PAM stack, so {p} is not enforced "
+        "and root can log in on any tty — lock root's password or restrict it",
+    )
 
 
 def _fix_securetty() -> list[RollbackEntry]:
@@ -242,7 +351,7 @@ def _fix_securetty() -> list[RollbackEntry]:
     Only trims — never creates the file. If /etc/securetty does not exist,
     PAM already controls access (check passes) so no-op.
     """
-    p = Path("/etc/securetty")
+    p = _SECURETTY
     if not p.exists():
         return []
     bkp = journal.backup_file(str(p))
@@ -265,32 +374,43 @@ register(Control(
 
 # ---- CIS 4.2.3: Ensure permissions on all logfiles are configured ----
 
-def _world_accessible_logs() -> list[str]:
-    """Return paths of files in /var/log (top level) with any world bits set."""
+def _scan_world_accessible_logs() -> tuple[list[str], list[str]]:
+    """Walk /var/log recursively, as the CIS audit's `find /var/log -type f`
+    does, and return (regular files with any world bit set, directories that
+    could not be read). Symlinks are not followed."""
     import os, stat
-    hits = []
-    try:
-        entries = os.listdir("/var/log")
-    except (OSError, PermissionError):
-        return hits
-    for name in entries:
-        fp = os.path.join("/var/log", name)
-        try:
-            st = os.stat(fp)
-        except (OSError, PermissionError):
-            continue
-        if not stat.S_ISREG(st.st_mode):
-            continue
-        if stat.S_IMODE(st.st_mode) & 0o007:
-            hits.append(fp)
-    return hits
+    hits: list[str] = []
+    errors: list[str] = []
+
+    def _onerror(e: OSError) -> None:
+        errors.append(getattr(e, "filename", None) or _LOG_DIR)
+
+    for root, _dirs, files in os.walk(_LOG_DIR, onerror=_onerror):
+        for name in files:
+            fp = os.path.join(root, name)
+            try:
+                st = os.lstat(fp)
+            except OSError:
+                continue
+            if not stat.S_ISREG(st.st_mode):
+                continue
+            if stat.S_IMODE(st.st_mode) & 0o007:
+                hits.append(fp)
+    return hits, errors
+
+
+def _world_accessible_logs() -> list[str]:
+    """Return paths of files under /var/log with any world bits set."""
+    return _scan_world_accessible_logs()[0]
 
 
 def _check_log_permissions() -> CheckResult:
-    hits = _world_accessible_logs()
-    if not hits:
-        return CheckResult("pass")
-    return CheckResult("warn", f"{len(hits)} log files in /var/log are world-accessible")
+    hits, errors = _scan_world_accessible_logs()
+    if hits:
+        return CheckResult("warn", f"{len(hits)} log files under {_LOG_DIR} are world-accessible")
+    if errors:
+        return CheckResult("warn", f"cannot read {errors[0]} — log permissions not verified")
+    return CheckResult("pass")
 
 
 def _fix_log_permissions() -> list[RollbackEntry]:
@@ -332,25 +452,29 @@ register(Control(
 
 def _check_listening_services() -> CheckResult:
     try:
-        r = subprocess.run(["ss", "-H", "-tlnp"], capture_output=True, text=True)
+        # UDP services (snmpd, avahi, rpcbind...) count too, as in the CIS
+        # audit; with -t and -u, ss prefixes each row with a Netid column.
+        r = subprocess.run(["ss", "-H", "-tulnp"], capture_output=True, text=True)
     except FileNotFoundError:
         return CheckResult("warn", "ss not available — cannot enumerate listening services")
+    if r.returncode != 0:
+        return CheckResult("warn", f"ss failed (exit {r.returncode}) — cannot enumerate listening services")
     lines = [l for l in r.stdout.splitlines() if l.strip()]
     if not lines:
-        return CheckResult("pass", "no TCP services listening")
+        return CheckResult("pass", "no TCP or UDP services listening")
     ports = set()
     for line in lines:
         cols = line.split()
-        if len(cols) >= 4:
-            addr = cols[3]
+        if len(cols) >= 5:
+            addr = cols[4]
             port = addr.rsplit(":", 1)[-1]
             if port.isdigit():
-                ports.add(port)
-    sample = ",".join(sorted(ports, key=int)[:6])
+                ports.add(f"{port}/{cols[0]}")
+    sample = ",".join(sorted(ports, key=lambda p: (int(p.split("/")[0]), p))[:6])
     more = "…" if len(ports) > 6 else ""
     return CheckResult(
         "warn",
-        f"{len(lines)} listening TCP service(s) on port(s) {sample}{more} — review with `ss -tlnp` and remove/mask any that aren't required",
+        f"{len(lines)} listening service(s) on port(s) {sample}{more} — review with `ss -tulnp` and remove/mask any that aren't required",
     )
 
 
@@ -495,50 +619,136 @@ register(Control(
 
 # ---- CIS 5.4.5: Ensure default user shell timeout is configured ----
 
+_SH_LEAD_WORDS = {"then", "else", "do", "{", "(", "!", "&&", "||"}
+
+
+def _tmout_statements(line: str) -> list[tuple[str, str | None, bool, bool]]:
+    """Parse the TMOUT statements on one shell line.
+
+    Returns (raw statement, assigned value or None, readonly?, exported?)
+    for each `;`-separated statement that names TMOUT. Comment lines and
+    trailing `#` comments are ignored."""
+    s = line.strip()
+    if not s or s.startswith("#"):
+        return []
+    s = re.split(r"(?:^|\s)#", s, maxsplit=1)[0]
+    out = []
+    for stmt in s.split(";"):
+        toks = stmt.split()
+        while toks and toks[0] in _SH_LEAD_WORDS:
+            toks = toks[1:]
+        if not toks:
+            continue
+        names = [t for t in toks if t == "TMOUT" or t.startswith("TMOUT=")]
+        if not names:
+            continue
+        value = None
+        for t in names:
+            if t.startswith("TMOUT="):
+                value = t[len("TMOUT="):].strip("\"'")
+        cmd = toks[0]
+        flags = "".join(t[1:] for t in toks[1:] if t.startswith("-"))
+        typed = cmd in ("declare", "typeset")
+        readonly = cmd == "readonly" or (typed and "r" in flags)
+        exported = cmd == "export" or (typed and "x" in flags)
+        out.append((stmt, value, readonly, exported))
+    return out
+
+
+def _tmout_files() -> list[Path]:
+    files = list(_SHELL_RC_FILES)
+    if _PROFILE_D.is_dir():
+        files.extend(sorted(_PROFILE_D.glob("*.sh")))
+    return files
+
+
+def _tmout_value_ok(value: str | None) -> bool | None:
+    """True for 1..900, False for 0 or > 900, None when not a literal number."""
+    if value is None or not value.isdigit():
+        return None
+    return 0 < int(value) <= 900
+
+
 def _check_shell_timeout() -> CheckResult:
-    """Look for a non-commented TMOUT=<seconds> assignment in any file a login
-    shell would actually source: /etc/profile, /etc/bashrc, /etc/bash.bashrc,
-    and every /etc/profile.d/*.sh file (which login shells source in lexical
-    order). The fix writes /etc/profile.d/80-lss-timeout.sh, so the audit must
-    scan that directory or it cosmetic-fails its own fix."""
-    import re
-    files: list[Path] = [
-        Path("/etc/profile"),
-        Path("/etc/bashrc"),
-        Path("/etc/bash.bashrc"),
-    ]
-    profile_d = Path("/etc/profile.d")
-    if profile_d.is_dir():
-        files.extend(sorted(profile_d.glob("*.sh")))
-    # Anchor to start-of-line and disallow `#` before TMOUT so a commented-out
-    # assignment doesn't masquerade as a real one (cosmetic-pass class).
-    pattern = re.compile(r"^[^#\n]*\bTMOUT=(\d+)", re.MULTILINE)
-    for p in files:
+    """CIS 5.4.5 audit: some file a shell sources (/etc/profile, /etc/bashrc,
+    /etc/bash.bashrc, /etc/profile.d/*.sh) must set TMOUT to 1..900 AND make it
+    readonly AND export it, and no such file may set TMOUT to 0 or above 900.
+    A plain `TMOUT=600` can be unset by any user, and a later file setting
+    TMOUT=0 overrides an earlier good value. The fix writes
+    /etc/profile.d/80-lss-timeout.sh, so profile.d must be scanned."""
+    good_unlocked: list[str] = []
+    bad: list[str] = []
+    compliant = False
+    for p in _tmout_files():
         if not p.exists():
             continue
         try:
             content = p.read_text()
         except OSError:
-            continue
-        m = pattern.search(content)
-        if m:
-            val = int(m.group(1))
-            if 0 < val <= 900:
-                return CheckResult("pass")
-            return CheckResult("warn", f"TMOUT={val}, recommended: ≤ 900")
+            return CheckResult("warn", f"cannot read {p} — TMOUT not verified")
+        has_good = has_ro = has_export = False
+        for line in content.splitlines():
+            for _stmt, value, ro, exp in _tmout_statements(line):
+                ok = _tmout_value_ok(value)
+                if ok is False:
+                    bad.append(f"TMOUT={value} in {p}")
+                elif ok:
+                    has_good = True
+                has_ro = has_ro or ro
+                has_export = has_export or exp
+        if has_good and has_ro and has_export:
+            compliant = True
+        elif has_good:
+            good_unlocked.append(str(p))
+    if bad:
+        return CheckResult("warn", f"{', '.join(bad[:3])} — recommended: 1-900 everywhere")
+    if compliant:
+        return CheckResult("pass")
+    if good_unlocked:
+        return CheckResult(
+            "fail",
+            f"TMOUT set in {good_unlocked[0]} but not both readonly and exported — "
+            "users can unset it",
+        )
     return CheckResult("fail", "TMOUT not set — no shell idle timeout")
 
 
 def _fix_shell_timeout() -> list[RollbackEntry]:
-    conf = Path("/etc/profile.d/80-lss-timeout.sh")
+    entries: list[RollbackEntry] = []
+    conf = _PROFILE_D / "80-lss-timeout.sh"
+    # A TMOUT of 0 or > 900 elsewhere would keep the check failing (and a
+    # later file can override ours), so comment those lines out, as LSS-003
+    # does for unsafe PATH lines.
+    for p in _tmout_files():
+        if p == conf or not p.exists():
+            continue
+        try:
+            lines = p.read_text().splitlines(keepends=True)
+        except OSError:
+            continue
+        changed = False
+        for i, ln in enumerate(lines):
+            if any(_tmout_value_ok(v) is False for _s, v, _r, _e in _tmout_statements(ln)):
+                if not changed:
+                    bkp_other = journal.backup_file(str(p))
+                lines[i] = f"# [LSS-DISABLED] {ln}"
+                changed = True
+        if changed:
+            p.write_text("".join(lines))
+            entries.append(RollbackEntry(
+                action=f"commented out non-compliant TMOUT line(s) in {p}",
+                path=str(p),
+                backup=bkp_other,
+            ))
     bkp = journal.backup_file(str(conf))
     conf.write_text("# Set by LSS — shell timeout after 15 minutes of inactivity\nreadonly TMOUT=900\nexport TMOUT\n")
-    return [RollbackEntry(
+    entries.append(RollbackEntry(
         action="set shell TMOUT=900 in /etc/profile.d/",
         path=str(conf),
         backup=bkp,
         undo=[] if bkp else [["rm", "-f", str(conf)]],
-    )]
+    ))
+    return entries
 
 
 register(Control(
@@ -553,20 +763,22 @@ register(Control(
 # ---- CIS 4.1.2: Ensure audit backlog limit is sufficient ----
 
 def _check_audit_backlog() -> CheckResult:
-    import re
-    p = Path("/proc/cmdline")
+    p = _PROC_CMDLINE
     if p.exists():
         try:
             text = p.read_text()
         except OSError:
             text = ""
-        m = re.search(r"audit_backlog_limit=(\d+)", text)
-        if m and int(m.group(1)) >= 8192:
+        # Whole parameter only, and the kernel applies the LAST occurrence
+        # when a parameter is repeated.
+        vals = re.findall(r"(?:^|\s)audit_backlog_limit=(\d+)(?=\s|$)", text)
+        val = vals[-1] if vals else None
+        if val is not None and int(val) >= 8192:
             return CheckResult("pass")
-        if m:
+        if val is not None:
             return CheckResult(
                 "warn",
-                f"audit_backlog_limit={m.group(1)}, recommended: >= 8192. "
+                f"audit_backlog_limit={val}, recommended: >= 8192. "
                 f"Edit GRUB_CMDLINE_LINUX in /etc/default/grub, then run update-grub and reboot.",
             )
     return CheckResult(
@@ -623,11 +835,12 @@ def _is_live_persistence() -> bool:
         return False
 
 
-def _apparmor_service_condition_skipped() -> bool:
+def _apparmor_service_condition_skipped() -> bool | None:
     """True if apparmor.service is loaded but skipped by a unit Condition.
 
     Returns False if the service is not loaded at all (different problem,
-    handled by 1.6.1) or if the condition is satisfied (service runs).
+    handled by 1.6.1) or if the condition is satisfied (service runs), and
+    None if systemctl failed, so the state is unknown.
     """
     try:
         r = subprocess.run(
@@ -639,17 +852,22 @@ def _apparmor_service_condition_skipped() -> bool:
         # No systemd, so no apparmor.service unit to be condition-skipped.
         return False
     if r.returncode != 0:
+        return None
+    props = dict(
+        l.split("=", 1) for l in r.stdout.splitlines() if "=" in l
+    )
+    if props.get("LoadState") != "loaded":
         return False
-    out = r.stdout
-    if "LoadState=loaded" not in out:
-        return False
-    return "ConditionResult=no" in out
+    return props.get("ConditionResult") == "no"
 
 
 def _check_apparmor_live_condition() -> CheckResult:
     if not _is_live_persistence():
         return CheckResult("skip", "not a Debian/Kali Live + persistence system")
-    if not _apparmor_service_condition_skipped():
+    skipped = _apparmor_service_condition_skipped()
+    if skipped is None:
+        return CheckResult("warn", "systemctl show apparmor.service failed — condition not verified")
+    if not skipped:
         return CheckResult("pass", "apparmor.service condition is satisfied")
     return CheckResult(
         "fail",
@@ -697,6 +915,50 @@ _LSS005_RULES = [
 ]
 
 
+def _is_user_execve_rule(line: str) -> bool:
+    """True for a loaded `always,exit` rule on the execve syscall whose only
+    filters are the arch, a key and auid (auid>=N with N <= 1000, plus any
+    auid!= exclusions). Token-level, so `-S execveat` is not `execve` and
+    `auid>=10000` (which skips UIDs 1000-9999) is not `auid>=1000`; other
+    filters (euid=0, -C euid!=uid, exe=...) narrow it to a subset of users."""
+    toks = line.split()
+    action = ""
+    syscalls: set[str] = set()
+    fields: list[str] = []
+    i = 0
+    while i < len(toks):
+        t = toks[i]
+        arg = toks[i + 1] if i + 1 < len(toks) else ""
+        if t in ("-a", "-A"):
+            action = arg
+        elif t == "-S":
+            syscalls.update(arg.split(","))
+        elif t == "-F":
+            fields.append(arg)
+        elif t == "-k":
+            pass
+        elif t in ("-w", "-p", "-C"):
+            return False  # a watch, or a comparison that narrows the rule
+        else:
+            i += 1
+            continue
+        i += 2
+    if set(action.split(",")) != {"always", "exit"} or "execve" not in syscalls:
+        return False
+    floor_ok = False
+    for f in fields:
+        m = re.fullmatch(r"auid>=(\d+)", f)
+        if m:
+            if int(m.group(1)) > 1000:
+                return False
+            floor_ok = True
+            continue
+        if f.startswith("auid!=") or f.startswith(("arch=", "key=")):
+            continue
+        return False
+    return floor_ok
+
+
 def _check_forensic_execve() -> CheckResult:
     """Pass when an active execve rule scoped to real users (auid>=1000) exists.
 
@@ -711,7 +973,7 @@ def _check_forensic_execve() -> CheckResult:
     if r.returncode != 0:
         return CheckResult("warn", "auditctl unavailable — cannot inspect loaded rules")
     for line in r.stdout.splitlines():
-        if "-S execve" in line and "auid>=1000" in line:
+        if _is_user_execve_rule(line):
             return CheckResult("pass", "broader user-execve audit rule active")
     return CheckResult(
         "manual",
