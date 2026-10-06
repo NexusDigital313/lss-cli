@@ -70,4 +70,4 @@ The modules round 2 did not audit: logging.py, audit_rules.py, extras.py, servic
 
 **Needs a live-host pass as well:** journald drop-in order against `systemd-analyze cat-config`, the `auditctl -l` rule rendering and `ausyscall` unknown-syscall handling (aarch64), the RHEL `audit` package install, GRUB user.cfg on RHEL, and the socket-activated service units.
 
-**Known false fail, not fixed:** 4.1.16 (`-e 2`) never passes at runtime, because `auditctl -l` does not print the enable flag. It needs `auditctl -s`.
+**Fixed, 2026-10-05:** 4.1.16 (`-e 2`) never passed at runtime, because `auditctl -l` does not print the enable flag. It now reads the `enabled` flag from `auditctl -s` (`_audit_enabled_flag()`): pass on `enabled 2`, warn when `-e 2` is persisted but not yet active, manual otherwise. Pinned in tests/test_false_pass_audit_rules.py.
